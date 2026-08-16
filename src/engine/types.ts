@@ -75,9 +75,19 @@ export interface Light {
   /** 0..1 amount of pseudo-random brightness wobble. */
   flicker: number;
   seed: number;
-  /** Per-tile visibility from this light, 0..1. Recomputed lazily. */
+  /**
+   * Per-tile visibility from this light, 0..1, recomputed lazily. The field
+   * covers only the light's own reach — a window of visW x visH tiles whose
+   * top-left tile is (visOX, visOY) — rather than the whole map. A light can
+   * illuminate nothing beyond its radius, so baking the rest is wasted work,
+   * and on a streamed world the map has no fixed size to bake over anyway.
+   */
   vis: Float32Array | null;
   visDirty: boolean;
+  visOX: number;
+  visOY: number;
+  visW: number;
+  visH: number;
   /** World position the visibility field was last baked from. */
   visX: number;
   visY: number;

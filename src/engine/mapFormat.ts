@@ -46,9 +46,17 @@ export interface MapSourceEntity {
   light?: Omit<MapSourceLight, 'x' | 'y'>;
 }
 
+/** Replaces `grid` with an endlessly generated world. */
+export interface MapSourceGenerate {
+  theme: string;
+  seed?: number;
+}
+
 export interface MapSource {
   name?: string;
+  /** Omitted when `generate` is present. */
   grid: string[];
+  generate?: MapSourceGenerate;
   spawn?: { x: number; y: number; angle?: number };
   /** Base light level with nothing else illuminating a surface, 0..1. */
   ambient?: number;
@@ -92,6 +100,24 @@ export function parseMapSource(text: string): MapSource {
   }
   const src = raw as Record<string, unknown>;
 
+  // A generated world supplies its own terrain, so "grid" is not required —
+  // but everything else in the format still applies on top of the theme.
+  if (src.generate !== undefined) {
+    const g = src.generate as Record<string, unknown>;
+    if (typeof g !== 'object' || g === null || Array.isArray(g)) {
+      fail('"generate" must be an object like { "theme": "catacombs", "seed": 7 }.');
+    }
+    if (typeof g.theme !== 'string') fail('"generate" needs a "theme" name.');
+    if (g.seed !== undefined && typeof g.seed !== 'number') fail('"generate.seed" must be a number.');
+
+    const gen: MapSource = {
+      grid: [],
+      generate: { theme: g.theme as string, seed: g.seed as number | undefined },
+    };
+    applyCommon(src, gen);
+    return gen;
+  }
+
   if (!Array.isArray(src.grid)) fail('"grid" is required and must be an array of strings.');
   const gridIn = src.grid as unknown[];
   if (gridIn.length === 0) fail('"grid" must contain at least one row.');
@@ -108,7 +134,15 @@ export function parseMapSource(text: string): MapSource {
   for (let i = 0; i < grid.length; i++) grid[i] = grid[i].padEnd(width, ' ');
 
   const out: MapSource = { grid };
+  applyCommon(src, out);
+  return out;
+}
 
+/**
+ * The optional fields, shared by authored and generated maps. A generated
+ * world takes its look from its theme, and anything set here overrides it.
+ */
+function applyCommon(src: Record<string, unknown>, out: MapSource): void {
   if (typeof src.name === 'string') out.name = src.name;
 
   if (src.spawn !== undefined) {
@@ -191,8 +225,6 @@ export function parseMapSource(text: string): MapSource {
       return o as unknown as MapSourceEntity;
     });
   }
-
-  return out;
 }
 
 function clamp01(v: number): number {

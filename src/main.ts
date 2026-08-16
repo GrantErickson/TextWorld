@@ -324,6 +324,16 @@ function updateStats(): void {
   stats.set('lights', String(world.lights.length));
   stats.set('position', `${camera.x.toFixed(2)}, ${camera.y.toFixed(2)}`);
   stats.set('heading', `${heading.toFixed(0)}°`);
+
+  if (world.infinite) {
+    const g = world.gen;
+    // A non-zero failure count means the theme's sample is over-constrained
+    // and the terrain is drifting toward the solver's fallback.
+    stats.set('wfc solves', String(g.solves));
+    stats.set('wfc failed', String(g.failures), g.failures === 0 ? 'good' : 'bad');
+    stats.set('relaxed', String(g.relaxations));
+    stats.set('tunnels', String(g.tunnels));
+  }
 }
 
 requestAnimationFrame(frame);

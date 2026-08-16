@@ -185,7 +185,35 @@ const BARE = `{
 }
 `;
 
+/**
+ * Generated worlds. A `generate` block replaces `grid` entirely: the terrain
+ * comes from Wave Function Collapse over the theme's sample art and streams
+ * forever as you walk. Change the seed for a different world in the same
+ * style; anything else the map format understands still layers on top, so
+ * `"exposure"` or `"fog"` here will override what the theme chose.
+ */
+const ENDLESS_CATACOMBS = `{
+  "name": "Endless Catacombs",
+  "generate": { "theme": "catacombs", "seed": 1337 }
+}
+`;
+
+const ENDLESS_CAVERNS = `{
+  "name": "Endless Caverns",
+  "generate": { "theme": "caverns", "seed": 90210 }
+}
+`;
+
+const ENDLESS_STATION = `{
+  "name": "Endless Station",
+  "generate": { "theme": "station", "seed": 4242 }
+}
+`;
+
 export const PRESETS: Preset[] = [
+  { id: 'gen-catacombs', label: '∞ Catacombs', source: ENDLESS_CATACOMBS },
+  { id: 'gen-caverns', label: '∞ Caverns', source: ENDLESS_CAVERNS },
+  { id: 'gen-station', label: '∞ Station', source: ENDLESS_STATION },
   { id: 'vault', label: 'The Vault', source: VAULT },
   { id: 'court', label: 'Night Court', source: COURT },
   { id: 'bare', label: 'First Light', source: BARE },

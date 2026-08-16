@@ -12,6 +12,11 @@ export class Minimap {
   private scale = 8;
   private offX = 0;
   private offY = 0;
+  /** Tile coordinates of the drawn region's top-left corner. */
+  private viewX = 0;
+  private viewY = 0;
+  private viewW = 1;
+  private viewH = 1;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -20,11 +25,33 @@ export class Minimap {
     this.ctx = ctx;
   }
 
+  /**
+   * Choose the region to draw. A fixed map is shown whole; a streamed one has
+   * no "whole", so it gets a window centred on the player — which also keeps
+   * the scale readable instead of shrinking as the world grows.
+   */
+  private chooseView(world: World, cam: Camera): void {
+    if (!world.infinite) {
+      this.viewX = world.originX;
+      this.viewY = world.originY;
+      this.viewW = world.width;
+      this.viewH = world.height;
+      return;
+    }
+    const span = Math.min(world.width, 56);
+    this.viewW = span;
+    this.viewH = span;
+    // Follow in whole tiles: a fractional origin would make the whole map
+    // shimmer as the player walks.
+    this.viewX = Math.round(cam.x) - (span >> 1);
+    this.viewY = Math.round(cam.y) - (span >> 1);
+  }
+
   private layout(world: World): void {
     const dpr = window.devicePixelRatio || 1;
     const cssW = Math.max(1, Math.floor(this.canvas.getBoundingClientRect().width));
-    const scale = Math.max(2, Math.floor((cssW / world.width) * dpr) / dpr);
-    const cssH = Math.ceil(scale * world.height);
+    const scale = Math.max(2, Math.floor((cssW / this.viewW) * dpr) / dpr);
+    const cssH = Math.ceil(scale * this.viewH);
 
     const pxW = Math.floor(cssW * dpr);
     const pxH = Math.floor(cssH * dpr);
@@ -36,14 +63,17 @@ export class Minimap {
 
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.scale = scale;
-    this.offX = (cssW - scale * world.width) / 2;
-    this.offY = 0;
+    this.offX = (cssW - scale * this.viewW) / 2 - this.viewX * scale;
+    this.offY = -this.viewY * scale;
   }
 
   draw(world: World, cam: Camera, renderer: Renderer, showRays: boolean): void {
+    this.chooseView(world, cam);
     this.layout(world);
     const ctx = this.ctx;
     const s = this.scale;
+    // Offsets already fold in the view origin, so everything below can be
+    // drawn straight from absolute world coordinates.
     const ox = this.offX;
     const oy = this.offY;
 
@@ -51,9 +81,10 @@ export class Minimap {
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
     // Tiles.
-    for (let y = 0; y < world.height; y++) {
-      for (let x = 0; x < world.width; x++) {
-        const t = world.tiles[y * world.width + x];
+    for (let y = this.viewY; y < this.viewY + this.viewH; y++) {
+      for (let x = this.viewX; x < this.viewX + this.viewW; x++) {
+        const t = world.tileAt(x, y);
+        if (!t) continue;
         if (t.type === TILE_EMPTY) {
           const v = Math.round(26 + t.ao * 22);
           ctx.fillStyle = `rgb(${v},${v + 3},${v + 7})`;

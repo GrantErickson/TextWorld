@@ -55,6 +55,98 @@ attenuation, wrap-around diffuse (pure Lambert goes black at grazing angles,
 which at this resolution reads as an artefact), fog, baked corner occlusion,
 and a filmic tone map so bright pools do not flatten to white.
 
+## Infinite worlds (Wave Function Collapse)
+
+A map source may replace `grid` with a `generate` block, which streams an
+endless world instead of loading a fixed one:
+
+    { "name": "Endless Catacombs", "generate": { "theme": "catacombs", "seed": 7 } }
+
+The design in one line: **WFC generates characters, not tiles.** The model
+learns from a small block of ASCII art — the same thing an author would type
+into the editor — and emits more text in that style, which then goes through
+the ordinary legend/material pipeline. Whatever `#` means in a hand-written
+map, it means the same in a generated one, and themes are authored as sample
+art rather than as code.
+
+Themes live in `src/engine/themes.ts`; the solver is `src/engine/wfc.ts`.
+A new world type is a block of sample art plus a material palette.
+
+### Four things that make it work (each was a bug first)
+
+These are not incidental — the generator produced garbage without every one:
+
+1. **Never feed edited terrain back to the solver.** `chars` holds pristine WFC
+   output and is never modified; carved passages live in a separate `carved`
+   overlay that only tile-building consults. Carving into `chars` manufactures
+   local arrangements that appear nowhere in the sample, and pinning those as
+   constraints is unsatisfiable *by construction* — it turned 100% of streamed
+   solves into failures while the initial world looked perfect.
+2. **Relax constraints progressively.** A failed solve emits characters that
+   are not a valid pattern combination, which poisons every solve downstream
+   and decays the world into fallback. `solveRect` retries with less and less
+   agreement demanded, ending at none — which always succeeds. Failure rate
+   went 97% → 0%.
+3. **Commit only the target rectangle.** Solves are padded with context, but
+   writing that padding back leaves the ungenerated area ragged, and a region
+   hemmed in on three or four sides is far harder to satisfy than one being
+   extended along an edge.
+4. **Tunnel, don't seal.** WFC has no notion of connectivity. Deleting stranded
+   rooms is the easy fix and throws away most of what the generator drew;
+   `connectRegions` instead BFSes out of each pocket and opens the shortest
+   path to reachable ground. Seed that flood **from the player only** — seeding
+   from the window border too silently declares regions "fine" that the player
+   cannot actually walk to.
+
+`world.gen` counts solves, failures, relaxations and tunnels, and the telemetry
+pane shows them. **A non-zero failure count means a theme's sample is
+over-constrained** and its terrain is drifting toward the fallback.
+
+### Drawing a sample that solves
+
+Sample art is the whole game, and success rate is not guesswork — measure it.
+Free 24x24 solves, n=3: the first catacombs maze managed 50%, the first station
+sample 0%. Redrawn with wider halls and repeated motifs, both reach 100%.
+
+- **n=3, not n=2.** n=2 solves every time and produces noise; n=3 produces
+  actual corridors and rooms. Fix the art, don't lower n.
+- Rigid 1-wide labyrinths are the worst case — over-constrained *and*
+  claustrophobic to walk. Wide halls and repeated bays work.
+- Contradiction rate climbs steeply with region area, hence `SOLVE_BLOCK`.
+
+Streaming is a **sliding window**, not true unbounded storage:
+
+- The world keeps a fixed `WINDOW`-square window of tiles plus the character
+  grid it came from, and an `originX/originY` in absolute world coordinates.
+  Finite maps are the same code with origin `(0, 0)`, so nothing regressed.
+- When the player drifts more than `SHIFT_THRESHOLD` tiles from the window
+  centre, the window recenters: the overlap is copied, and only the newly
+  exposed strip is solved, with the retained characters supplied as fixed
+  constraints so the seam is coherent.
+- Solving happens in bounded rectangles, never over the whole window, which
+  keeps both time and the propagator's memory per solve small.
+- Lights and props are placed from the generated characters and culled when
+  they leave the window.
+
+Consequence worth knowing: memory is bounded, so walking far away and coming
+back regenerates that area differently. Terrain is only stable within roughly
+one window.
+
+The solver must never throw or hang — the frame loop calls it. On repeated
+contradiction it returns its best partial assignment. When reading that out,
+pick each cell's *likeliest* remaining pattern, not its first: pattern 0 is
+whatever sat in the sample's top-left corner, so "first" biases a whole failed
+region into a slab of it.
+
+Generated worlds also give the player a dim **lantern** (light 0, moved by
+`moveLantern`). A fixed map is authored so everywhere worth standing is lit; an
+endless one cannot promise that, and walking into an unlit stretch means seeing
+nothing at all.
+
+Not yet done for generated worlds: **doors**. The themes' legends define none,
+because door state would have to survive the tile rebuild on every window
+shift, and getting that wrong is worse than not having them.
+
 ## Lighting a map (hard-won, non-obvious)
 
 Tuning a map's look is not intuitive, and the failure modes look like renderer
@@ -131,12 +223,16 @@ Data flow per frame:
 
 Complete and working end to end. The app builds, runs, and renders.
 
-Verified this session:
+Verified:
 
-- `npm run build` clean (42 KB JS / 3.6 KB CSS gzipped to ~17 KB, no deps).
-- All three preset maps build headlessly and pass structural checks: no ragged
-  grid rows, door axes correct, spawns legal, no light or entity buried in a
-  wall, and no open tile unreachable from the spawn.
+- `npm run build` clean (60 KB JS / 3.6 KB CSS, ~22 KB gzipped, no deps).
+- All six presets build headlessly and pass structural checks: no ragged grid
+  rows, door axes correct, spawns legal, no light or entity buried in a wall,
+  and no open tile unreachable from the spawn.
+- Generated worlds: 0 WFC fallbacks on all three themes; 100% of open tiles
+  reachable after 30,000 frames of collision-driven walking; window shifts cost
+  ~75-80 ms and happen roughly once a minute of walking; render stays ~1-2 ms
+  with 25-48 lights. All three verified by eye in a browser.
 - Rendered in headless Chrome; viewport, minimap, telemetry and live editor all
   work. Interior and outdoor (sky + stars) scenes both confirmed by eye.
 - **Stability measured**, since that was the hardest requirement. Per frame, on

@@ -30,23 +30,33 @@ export function ensureVisibility(world: World): void {
 }
 
 export function bakeVisibility(world: World, light: Light): void {
-  const w = world.width;
-  const h = world.height;
+  // One tile of margin past the radius so the wall-inheritance pass below has
+  // real neighbours to read at the edge of the field.
+  const r = Math.ceil(light.radius) + 1;
+  const w = r * 2 + 1;
+  const h = w;
+  const ox = Math.floor(light.x) - r;
+  const oy = Math.floor(light.y) - r;
+
   if (!light.vis || light.vis.length !== w * h) light.vis = new Float32Array(w * h);
   const vis = light.vis;
+  light.visOX = ox;
+  light.visOY = oy;
+  light.visW = w;
+  light.visH = h;
 
   const r2 = light.radius * light.radius;
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
-      const tile = world.tiles[i];
-      if (tile.type !== TILE_EMPTY) {
+      const tile = world.tileAt(ox + x, oy + y);
+      if (!tile || tile.type !== TILE_EMPTY) {
         vis[i] = -1; // resolved in the fill-in pass below
         continue;
       }
-      const cx = x + 0.5;
-      const cy = y + 0.5;
+      const cx = ox + x + 0.5;
+      const cy = oy + y + 0.5;
       const dx = cx - light.x;
       const dy = cy - light.y;
       if (dx * dx + dy * dy > r2) {
@@ -86,11 +96,15 @@ export function bakeVisibility(world: World, light: Light): void {
 function visibilityAt(world: World, light: Light, x: number, y: number): number {
   const vis = light.vis;
   if (!vis) return 1;
-  const w = world.width;
-  const h = world.height;
+  const w = light.visW;
+  const h = light.visH;
 
-  const gx = x - 0.5;
-  const gy = y - 0.5;
+  // Into the field's local coordinates. Anything outside it is further away
+  // than the light reaches, so it is unlit rather than clamped to the edge.
+  const gx = x - 0.5 - light.visOX;
+  const gy = y - 0.5 - light.visOY;
+  if (gx < -1 || gy < -1 || gx > w || gy > h) return 0;
+
   let x0 = Math.floor(gx);
   let y0 = Math.floor(gy);
   const fx = gx - x0;
