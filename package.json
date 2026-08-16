@@ -1,0 +1,17 @@
+{
+  "name": "textworld",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A character-cell 3D renderer: simple text maps in, raycast text world out.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5"
+  }
+}

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TextWorld</title>
+    <script type="module" crossorigin src="./assets/index-BbetIYGV.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-rkhcFNaM.css">
+  </head>
+  <body>
+    <div id="app">
+      <header id="topbar">
+        <h1>TextWorld</h1>
+        <span class="tag">character-cell raycaster</span>
+        <div class="spacer"></div>
+        <label class="ctl">
+          cell size
+          <input id="fontSize" type="range" min="8" max="26" step="1" value="14" />
+          <output id="fontSizeOut">14</output>
+        </label>
+        <label class="ctl checkbox">
+          <input id="showRays" type="checkbox" /> rays
+        </label>
+        <button id="pauseBtn" class="btn" type="button">pause</button>
+      </header>
+
+      <main>
+        <section id="view">
+          <canvas id="screen"></canvas>
+          <div id="clickToPlay"><span>click to capture mouse &middot; <kbd>Esc</kbd> releases</span></div>
+        </section>
+
+        <aside id="panel">
+          <div class="pane">
+            <h2>Map</h2>
+            <canvas id="minimap"></canvas>
+          </div>
+
+          <div class="pane">
+            <h2>Telemetry</h2>
+            <div id="stats" class="stats"></div>
+          </div>
+
+          <div class="pane grow">
+            <h2>
+              World source
+              <span class="pane-actions">
+                <select id="presetSel" title="Load a built-in map"></select>
+                <button id="revertBtn" class="btn tiny" type="button">revert</button>
+              </span>
+            </h2>
+            <textarea id="src" spellcheck="false"></textarea>
+            <div id="err" class="err"></div>
+          </div>
+        </aside>
+      </main>
+
+      <footer id="help">
+        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &middot;
+        <kbd>&larr;</kbd><kbd>&rarr;</kbd> or mouse turn &middot;
+        <kbd>Shift</kbd> run &middot;
+        <kbd>E</kbd> open/close door &middot;
+        <kbd>R</kbd> respawn &middot;
+        <kbd>M</kbd> rays &middot;
+        <kbd>[</kbd><kbd>]</kbd> cell size
+      </footer>
+    </div>
+  </body>
+</html>
