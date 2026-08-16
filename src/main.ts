@@ -114,9 +114,14 @@ function applySource(text: string, keepView: boolean): boolean {
   const sameShape =
     keepView && haveWorld && world.width === next.width && world.height === next.height;
   if (sameShape && next.canOccupy(camera.x, camera.y, 0.24)) {
-    camera.placeAt(camera.x, camera.y, camera.angle);
+    camera.placeAt(camera.x, camera.y, camera.angle, next.groundAt(camera.x, camera.y));
   } else {
-    camera.placeAt(next.spawnX, next.spawnY, next.spawnAngle);
+    camera.placeAt(
+      next.spawnX,
+      next.spawnY,
+      next.spawnAngle,
+      next.groundAt(next.spawnX, next.spawnY),
+    );
   }
 
   world = next;
@@ -261,7 +266,12 @@ function frame(now: number): void {
   const move = input.sample();
 
   if (input.wasTapped('KeyR')) {
-    camera.placeAt(world.spawnX, world.spawnY, world.spawnAngle);
+    camera.placeAt(
+      world.spawnX,
+      world.spawnY,
+      world.spawnAngle,
+      world.groundAt(world.spawnX, world.spawnY),
+    );
     needsRedraw = true;
   }
   if (input.wasTapped('KeyE')) {
@@ -271,6 +281,10 @@ function frame(now: number): void {
   if (input.wasTapped('KeyM')) {
     showRays = !showRays;
     showRaysEl.checked = showRays;
+  }
+  if (input.wasTapped('KeyF')) {
+    camera.flying = !camera.flying;
+    camera.vz = 0;
   }
   if (input.wasTapped('BracketLeft')) setFontSize(display.getFontSize() - 1);
   if (input.wasTapped('BracketRight')) setFontSize(display.getFontSize() + 1);
@@ -324,6 +338,11 @@ function updateStats(): void {
   stats.set('lights', String(world.lights.length));
   stats.set('position', `${camera.x.toFixed(2)}, ${camera.y.toFixed(2)}`);
   stats.set('heading', `${heading.toFixed(0)}°`);
+  stats.set(
+    'altitude',
+    camera.flying ? `${camera.z.toFixed(2)} · flying` : `${camera.z.toFixed(2)}`,
+    camera.flying ? 'good' : '',
+  );
 
   if (world.infinite) {
     const g = world.gen;

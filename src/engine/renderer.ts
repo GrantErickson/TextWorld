@@ -17,9 +17,13 @@ import {
   toneMap,
 } from './shading.ts';
 
-/** Eye height above the floor, in tiles. Walls are one tile tall. */
-const CAM_Z = 0.5;
 const MAX_DIST = 44;
+/**
+ * Outdoor worlds see much further: there is no ceiling to close the view down
+ * and a landscape that stops at 44 tiles reads as a small room with a painted
+ * backdrop. Fog does the rest of the work.
+ */
+const TERRAIN_MAX_DIST = 95;
 
 export interface RenderStats {
   cols: number;
@@ -41,6 +45,14 @@ export class Renderer {
   private wallTop = new Int32Array(0);
   private wallBot = new Int32Array(0);
   private hits: RayHit[] = [];
+  /**
+   * Per-cell depth, written by the terrain pass. Indoors a single depth per
+   * column is enough to hide sprites behind walls, but a landscape presents a
+   * different distance in every row of a column, so sprites out there have to
+   * be tested cell by cell.
+   */
+  private depth = new Float32Array(0);
+  private cellDepth = false;
 
   /** World-space end point of each column's ray; drawn on the minimap. */
   rayX = new Float32Array(0);
@@ -61,6 +73,7 @@ export class Renderer {
       this.wallBot = new Int32Array(cols);
       this.rayX = new Float32Array(cols);
       this.rayY = new Float32Array(cols);
+      this.depth = new Float32Array(cols * rows);
       this.hits = new Array(cols);
       for (let i = 0; i < cols; i++) this.hits[i] = makeHit();
     }
@@ -91,9 +104,14 @@ export class Renderer {
     const projX = cols / (2 * cam.planeLength);
     const horizon = rows * 0.5 + cam.pitch;
 
-    this.castColumns(world, cam, cols, rows, projY, horizon);
-    this.drawFloorAndCeiling(world, cam, cols, rows, projY, horizon);
-    this.drawWalls(world, cam, cols, rows, projY, horizon);
+    this.cellDepth = world.terrain;
+    if (world.terrain) {
+      this.drawTerrain(world, cam, cols, rows, projY, horizon);
+    } else {
+      this.castColumns(world, cam, cols, rows, projY, horizon);
+      this.drawFloorAndCeiling(world, cam, cols, rows, projY, horizon);
+      this.drawWalls(world, cam, cols, rows, projY, horizon);
+    }
     const sprites = this.drawSprites(world, cam, cols, rows, projX, projY, horizon);
 
     this.stats.cols = cols;
@@ -126,8 +144,10 @@ export class Renderer {
         this.rayX[x] = hit.wx;
         this.rayY[x] = hit.wy;
         const lineH = projY / hit.dist;
-        const top = horizon - lineH * 0.5;
-        const bot = horizon + lineH * 0.5;
+        // Projected from the actual eye height rather than assumed to be
+        // centred, so a jump moves walls, floor and ceiling together.
+        const top = horizon + (projY * (cam.z - 1)) / hit.dist;
+        const bot = horizon + (projY * cam.z) / hit.dist;
         // A row is covered when its centre falls inside the wall span.
         this.wallTop[x] = Math.max(0, Math.ceil(top - 0.5));
         this.wallBot[x] = Math.min(rows - 1, Math.floor(bot - 0.5));
@@ -170,7 +190,11 @@ export class Renderer {
       const isFloor = p > 0;
       const ap = Math.abs(p);
 
-      let rowDist = ap < 1e-3 ? MAX_DIST : (projY * CAM_Z) / ap;
+      // Distance to the floor is set by how far the eye is above it; to the
+      // ceiling, by how far it is below that. At eye height 0.5 these are
+      // equal, which is why a fixed constant worked until the eye could move.
+      const eyeToPlane = isFloor ? cam.z : 1 - cam.z;
+      let rowDist = ap < 1e-3 ? MAX_DIST : (projY * eyeToPlane) / ap;
       const beyond = rowDist >= MAX_DIST;
       if (beyond) rowDist = MAX_DIST;
 
@@ -288,7 +312,7 @@ export class Renderer {
       if (!hit.hit) continue;
 
       const lineH = projY / hit.dist;
-      const wTop = horizon - lineH * 0.5;
+      const wTop = horizon + (projY * (cam.z - 1)) / hit.dist;
       const yStart = this.wallTop[x];
       const yEnd = this.wallBot[x];
       if (yEnd < yStart) continue;
@@ -348,6 +372,188 @@ export class Renderer {
     }
   }
 
+  // ------------------------------------------------------- terrain pass
+
+  /**
+   * Non-level ground, drawn with a y-buffer.
+   *
+   * The flat-floor passes cast by screen *row*, which works only because every
+   * cell in a row sits at the same distance — true of a level floor and false
+   * of a hillside. So terrain marches per *column* instead, front to back,
+   * where each cell contributes at most two things: a vertical face where the
+   * ground steps up from the cell before it, and its top surface spanning the
+   * distances the ray spends inside it.
+   *
+   * `yBuf` is the lowest row not yet painted. It only ever moves up the
+   * screen, so occlusion needs no depth compare: standing on a plateau, the
+   * valley immediately below the edge is hidden simply because those rows were
+   * already covered, and it reappears further out exactly where the line of
+   * sight clears the lip. Whatever rows remain at the end are sky.
+   */
+  private drawTerrain(
+    world: World,
+    cam: Camera,
+    cols: number,
+    rows: number,
+    projY: number,
+    horizon: number,
+  ): void {
+    const buf = this.buf;
+    const acc = this.accum;
+    const exposure = world.exposure;
+    const camZ = cam.z;
+    const depth = this.depth;
+    depth.fill(Infinity);
+
+    const fogR = world.fogColor.r / 255;
+    const fogG = world.fogColor.g / 255;
+    const fogB = world.fogColor.b / 255;
+    const sunR = world.sunColor.r / 255;
+    const sunG = world.sunColor.g / 255;
+    const sunB = world.sunColor.b / 255;
+
+    for (let x = 0; x < cols; x++) {
+      const cameraX = (2 * (x + 0.5)) / cols - 1;
+      const rdx = cam.dirX + cam.planeX * cameraX;
+      const rdy = cam.dirY + cam.planeY * cameraX;
+
+      let mapX = Math.floor(cam.x);
+      let mapY = Math.floor(cam.y);
+      const deltaX = rdx === 0 ? Infinity : Math.abs(1 / rdx);
+      const deltaY = rdy === 0 ? Infinity : Math.abs(1 / rdy);
+
+      let stepX: number;
+      let stepY: number;
+      let sideDistX: number;
+      let sideDistY: number;
+      if (rdx < 0) {
+        stepX = -1;
+        sideDistX = (cam.x - mapX) * deltaX;
+      } else {
+        stepX = 1;
+        sideDistX = (mapX + 1 - cam.x) * deltaX;
+      }
+      if (rdy < 0) {
+        stepY = -1;
+        sideDistY = (cam.y - mapY) * deltaY;
+      } else {
+        stepY = 1;
+        sideDistY = (mapY + 1 - cam.y) * deltaY;
+      }
+
+      const here = world.tileAt(mapX, mapY);
+      let prevH = here ? here.height : 0;
+      let dNear = 0;
+      let side = 0;
+      let yBuf = rows;
+
+      this.rayX[x] = cam.x + rdx * TERRAIN_MAX_DIST;
+      this.rayY[x] = cam.y + rdy * TERRAIN_MAX_DIST;
+
+      for (let guard = 0; guard < 600 && yBuf > 0; guard++) {
+        const alongX = sideDistX < sideDistY;
+        let dFar = alongX ? sideDistX : sideDistY;
+        if (dFar > TERRAIN_MAX_DIST) dFar = TERRAIN_MAX_DIST;
+
+        const tile = world.tileAt(mapX, mapY);
+        if (!tile) break;
+        const h = tile.height;
+
+        // ---- the vertical face where the ground steps up
+        if (h > prevH && dNear > 0.02) {
+          const rowTop = horizon + (projY * (camZ - h)) / dNear;
+          const rowBot = horizon + (projY * (camZ - prevH)) / dNear;
+          const y0 = Math.max(0, Math.ceil(rowTop - 0.5));
+          const y1 = Math.min(yBuf - 1, Math.floor(rowBot - 0.5));
+          if (y1 >= y0) {
+            const wx = cam.x + rdx * dNear;
+            const wy = cam.y + rdy * dNear;
+            const mat = tile.side ?? tile.floor;
+            const nx = side === 0 ? -stepX : 0;
+            const ny = side === 0 ? 0 : -stepY;
+            const u = side === 0 ? wy : wx;
+            const fogF = world.fogDensity > 0 ? 1 - Math.exp(-dNear * world.fogDensity) : 0;
+            const sun = world.sunIntensity * Math.max(0, nx * world.sunX + ny * world.sunY);
+
+            for (let y = y0; y <= y1; y++) {
+              const zAt = camZ - ((y + 0.5 - horizon) * dNear) / projY;
+              const tex = sampleTexture(mat, u, zAt);
+              surfaceLight(world, wx, wy, zAt, nx, ny, acc);
+              let r = (mat.color.r / 255) * ((acc.r + sunR * sun) * tex + mat.emissive);
+              let g = (mat.color.g / 255) * ((acc.g + sunG * sun) * tex + mat.emissive);
+              let b = (mat.color.b / 255) * ((acc.b + sunB * sun) * tex + mat.emissive);
+              if (fogF > 0) {
+                r += (fogR - r) * fogF;
+                g += (fogG - g) * fogF;
+                b += (fogB - b) * fogF;
+              }
+              buf.write(x, y, KIND_WALL, toneMap(r, exposure), toneMap(g, exposure), toneMap(b, exposure));
+              depth[y * cols + x] = dNear;
+            }
+            yBuf = y0;
+          }
+        }
+
+        // ---- the top surface, only ever visible from above it
+        if (h < camZ - 0.002 && yBuf > 0) {
+          const rise = projY * (camZ - h);
+          const rowFar = horizon + rise / Math.max(dFar, 1e-4);
+          const rowNear = dNear > 0.02 ? horizon + rise / dNear : rows * 8;
+          const y0 = Math.max(0, Math.ceil(rowFar - 0.5));
+          const y1 = Math.min(yBuf - 1, Math.floor(rowNear - 0.5));
+          if (y1 >= y0) {
+            const mat = tile.floor;
+            const sun =
+              world.sunIntensity *
+              Math.max(0, tile.nx * world.sunX + tile.ny * world.sunY + tile.nz * world.sunZ);
+            let painted = false;
+            for (let y = y0; y <= y1; y++) {
+              const p = y + 0.5 - horizon;
+              if (p <= 0.02) continue; // above the horizon: not this surface
+              // Invert the projection for this row. Sampling once per span
+              // instead looks fine on the flat and smears badly on a slope.
+              const d = rise / p;
+              const wx = cam.x + rdx * d;
+              const wy = cam.y + rdy * d;
+              const tex = sampleTexture(mat, wx, wy);
+              surfaceLight(world, wx, wy, h, 0, 0, acc);
+              const fogF = world.fogDensity > 0 ? 1 - Math.exp(-d * world.fogDensity) : 0;
+              let r = (mat.color.r / 255) * ((acc.r + sunR * sun) * tex + mat.emissive);
+              let g = (mat.color.g / 255) * ((acc.g + sunG * sun) * tex + mat.emissive);
+              let b = (mat.color.b / 255) * ((acc.b + sunB * sun) * tex + mat.emissive);
+              if (fogF > 0) {
+                r += (fogR - r) * fogF;
+                g += (fogG - g) * fogF;
+                b += (fogB - b) * fogF;
+              }
+              buf.write(x, y, KIND_FLOOR, toneMap(r, exposure), toneMap(g, exposure), toneMap(b, exposure));
+              depth[y * cols + x] = d;
+              painted = true;
+            }
+            if (painted) yBuf = Math.min(yBuf, Math.max(y0, Math.floor(horizon) + 1));
+          }
+        }
+
+        if (alongX) {
+          sideDistX += deltaX;
+          mapX += stepX;
+          side = 0;
+        } else {
+          sideDistY += deltaY;
+          mapY += stepY;
+          side = 1;
+        }
+        dNear = dFar;
+        prevH = h;
+        if (dNear >= TERRAIN_MAX_DIST) break;
+      }
+
+      for (let y = 0; y < yBuf; y++) {
+        this.writeSky(world, buf, x, y, rdx, rdy, horizon - (y + 0.5), rows);
+      }
+    }
+  }
+
   // ------------------------------------------------------------- pass 4
 
   private drawSprites(
@@ -394,10 +600,12 @@ export class Renderer {
       if (colR < 0 || colL >= cols) continue;
 
       const bob = e.bob > 0 ? Math.sin(world.time * 1.9 + e.bobPhase) * e.bob : 0;
-      const zBottom = def.base + bob;
+      // e.z is the ground the sprite stands on: 0 indoors, the terrain height
+      // outdoors, so a tree on a hilltop is drawn on the hilltop.
+      const zBottom = e.z + def.base + bob;
       const zTop = zBottom + def.height;
-      const rowB = horizon + (projY * (CAM_Z - zBottom)) / tY;
-      const rowT = horizon + (projY * (CAM_Z - zTop)) / tY;
+      const rowB = horizon + (projY * (cam.z - zBottom)) / tY;
+      const rowT = horizon + (projY * (cam.z - zTop)) / tY;
       if (rowB < 0 || rowT >= rows) continue;
 
       const artH = def.art.length;
@@ -409,14 +617,26 @@ export class Renderer {
       // Billboards face the camera, so light them against the view normal.
       surfaceLight(world, e.x, e.y, zBottom + def.height * 0.5, -cam.dirX, -cam.dirY, acc);
 
+      // Outdoors the sun does nearly all the lighting, and a sprite that only
+      // collects ambient reads as a black cut-out against a sunlit hillside.
+      // A billboard has no real normal to shade with, so it takes a flat share
+      // of the sun — enough to sit in the same light as the ground it is on.
+      if (world.sunIntensity > 0) {
+        const s = world.sunIntensity * 0.62;
+        acc.r += (world.sunColor.r / 255) * s;
+        acc.g += (world.sunColor.g / 255) * s;
+        acc.b += (world.sunColor.b / 255) * s;
+      }
+
       const fogF = world.fogDensity > 0 ? 1 - Math.exp(-tY * world.fogDensity) : 0;
       const fr = world.fogColor.r / 255;
       const fg = world.fogColor.g / 255;
       const fb = world.fogColor.b / 255;
 
-      const cr = def.color.r / 255;
-      const cg = def.color.g / 255;
-      const cb = def.color.b / 255;
+      const tint = e.tint ?? def.color;
+      const cr = tint.r / 255;
+      const cg = tint.g / 255;
+      const cb = tint.b / 255;
 
       const xStart = Math.max(0, Math.ceil(colL - 0.5));
       const xEnd = Math.min(cols - 1, Math.floor(colR - 0.5));
@@ -426,12 +646,15 @@ export class Renderer {
       let touched = false;
 
       for (let x = xStart; x <= xEnd; x++) {
-        if (tY >= this.zbuf[x]) continue; // hidden behind geometry
+        if (!this.cellDepth && tY >= this.zbuf[x]) continue; // hidden behind geometry
         let au = Math.floor(((x + 0.5 - colL) / spanX) * artW);
         if (au < 0) au = 0;
         else if (au >= artW) au = artW - 1;
 
         for (let y = yStart; y <= yEnd; y++) {
+          // Outdoors every row of a column sits at its own distance, so the
+          // test has to be per cell rather than per column.
+          if (this.cellDepth && tY >= this.depth[y * cols + x]) continue;
           let av = Math.floor(((y + 0.5 - rowT) / spanY) * artH);
           if (av < 0) av = 0;
           else if (av >= artH) av = artH - 1;

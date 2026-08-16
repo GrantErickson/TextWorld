@@ -6,11 +6,13 @@
   "description": "A character-cell 3D renderer: simple text maps in, raycast text world out.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && npm test && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"src/**/*.test.ts\""
   },
   "devDependencies": {
+    "@types/node": "^26.2.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.5"
   }

@@ -7,6 +7,9 @@ export interface MoveInput {
   mouseDX: number; // radians, consumed each frame
   mouseDY: number; // rows, consumed each frame
   run: boolean;
+  jump: boolean;
+  /** -1..1 vertical intent, used while flying. */
+  lift: number;
 }
 
 const WALK_SPEED = 2.6;
@@ -14,10 +17,54 @@ const RUN_MULTIPLIER = 1.9;
 const TURN_SPEED = 2.3; // radians/sec
 const RADIUS = 0.24;
 
+/** Eye height above whatever the feet are standing on, in tiles. */
+export const EYE_HEIGHT = 0.5;
+/**
+ * How fast the eye catches up to the ground beneath it. Stepping onto a ledge
+ * should not teleport the view, and the smoothing costs nothing in stability:
+ * it settles within a few frames and then stops moving entirely.
+ */
+const EYE_FOLLOW = 14;
+
+const GRAVITY = 18;
+/**
+ * Chosen so a jump rises a little over one tile. That clears the 0.95-tile
+ * terraces of the temperate biomes — enough to scramble out of a hollow — but
+ * not the 1.35-tile ledges of the badlands, so a cliff is still a cliff.
+ * Anything a jump cannot solve is what flight is for.
+ */
+const JUMP_SPEED = 6.2;
+/** A drop this much below the feet starts a fall rather than a step down. */
+const FALL_THRESHOLD = 0.3;
+const FLY_SPEED = 6;
+/**
+ * Indoors the eye must stay between floor and ceiling: the flat-floor passes
+ * project both from the eye height, and outside this band the geometry folds
+ * through itself.
+ */
+const INDOOR_MIN_Z = 0.12;
+const INDOOR_MAX_Z = 0.88;
+
 export class Camera {
   x = 1.5;
   y = 1.5;
   angle = 0;
+
+  /**
+   * Eye height in world units. On a flat map this stays at EYE_HEIGHT and the
+   * renderer behaves exactly as it always did; outdoors it rides the terrain.
+   */
+  z = EYE_HEIGHT;
+
+  /** Vertical velocity, in tiles per second. Zero unless jumping or falling. */
+  vz = 0;
+  grounded = true;
+  /**
+   * Free flight. Terrain can and does produce hollows that a jump cannot get
+   * out of, and rather than compromise the landscape to guarantee escape, this
+   * is the way out. It also happens to be the best way to look at a landscape.
+   */
+  flying = false;
 
   /** Vertical look, in screen rows offset from centre. */
   pitch = 0;
@@ -42,10 +89,11 @@ export class Camera {
     this.updateBasis();
   }
 
-  placeAt(x: number, y: number, angle: number): void {
+  placeAt(x: number, y: number, angle: number, groundZ = 0): void {
     this.x = x;
     this.y = y;
     this.angle = angle;
+    this.z = groundZ + EYE_HEIGHT;
     this.pitch = 0;
     this.teleported = true;
     this.updateBasis();
@@ -99,8 +147,64 @@ export class Camera {
       mx = (mx / len) * speed;
       my = (my / len) * speed;
 
-      if (world.canOccupy(this.x + mx, this.y, RADIUS)) this.x += mx;
-      if (world.canOccupy(this.x, this.y + my, RADIUS)) this.y += my;
+      // Outdoors the same call refuses steps the legs could not make, so a
+      // cliff stops you without being modelled as a wall. Passing the feet
+      // height means that while airborne you clear whatever you are above —
+      // jumping onto a ledge works, and walking into its face still does not.
+      const feet = this.z - EYE_HEIGHT;
+      if (world.canStep(this.x, this.y, this.x + mx, this.y, RADIUS, feet)) this.x += mx;
+      if (world.canStep(this.x, this.y, this.x, this.y + my, RADIUS, feet)) this.y += my;
+    }
+
+    this.updateVertical(dt, input, world);
+  }
+
+  /** Gravity, jumping and flight. */
+  private updateVertical(dt: number, input: MoveInput, world: World): void {
+    const groundZ = world.groundAt(this.x, this.y);
+    const restZ = groundZ + EYE_HEIGHT;
+
+    if (this.flying) {
+      this.vz = 0;
+      this.grounded = false;
+      this.z += input.lift * FLY_SPEED * dt;
+      // Flight is an escape hatch, not a way through the floor.
+      if (this.z < restZ) {
+        this.z = restZ;
+        this.grounded = true;
+      }
+    } else if (this.grounded) {
+      if (input.jump) {
+        this.vz = JUMP_SPEED;
+        this.grounded = false;
+        this.z += this.vz * dt;
+      } else if (this.z - EYE_HEIGHT - groundZ > FALL_THRESHOLD) {
+        // Walked off a ledge.
+        this.grounded = false;
+        this.vz = 0;
+      } else {
+        // Ride the ground, smoothed, so a step up is a rise and not a jolt.
+        const k = Math.min(1, EYE_FOLLOW * dt);
+        this.z += (restZ - this.z) * k;
+        if (Math.abs(restZ - this.z) < 0.002) this.z = restZ;
+      }
+    } else {
+      this.vz -= GRAVITY * dt;
+      this.z += this.vz * dt;
+      if (this.z <= restZ && this.vz <= 0) {
+        this.z = restZ;
+        this.vz = 0;
+        this.grounded = true;
+      }
+    }
+
+    if (!world.terrain) {
+      // A flat map has a ceiling one tile up; keep the eye inside the room.
+      if (this.z > INDOOR_MAX_Z) {
+        this.z = INDOOR_MAX_Z;
+        if (this.vz > 0) this.vz = 0;
+      }
+      if (this.z < INDOOR_MIN_Z) this.z = INDOOR_MIN_Z;
     }
   }
 }

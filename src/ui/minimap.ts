@@ -80,11 +80,48 @@ export class Minimap {
     ctx.fillStyle = '#070a0f';
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
+    // Outdoors, every tile is walkable ground, so tile *type* says nothing.
+    // Shade by elevation instead — that is the thing worth seeing on a map of
+    // open country.
+    let loH = 0;
+    let hiH = 1;
+    if (world.terrain) {
+      loH = Infinity;
+      hiH = -Infinity;
+      for (let y = this.viewY; y < this.viewY + this.viewH; y++) {
+        for (let x = this.viewX; x < this.viewX + this.viewW; x++) {
+          const t = world.tileAt(x, y);
+          if (!t || t.type !== TILE_EMPTY) continue;
+          if (t.height < loH) loH = t.height;
+          if (t.height > hiH) hiH = t.height;
+        }
+      }
+      if (!Number.isFinite(loH)) {
+        loH = 0;
+        hiH = 1;
+      }
+      if (hiH - loH < 0.5) hiH = loH + 0.5;
+    }
+
     // Tiles.
     for (let y = this.viewY; y < this.viewY + this.viewH; y++) {
       for (let x = this.viewX; x < this.viewX + this.viewW; x++) {
         const t = world.tileAt(x, y);
         if (!t) continue;
+        if (world.terrain) {
+          const k = (t.height - loH) / (hiH - loH);
+          if (t.type !== TILE_EMPTY) {
+            ctx.fillStyle = '#c9b58a'; // building
+          } else if (t.water) {
+            ctx.fillStyle = `rgb(${Math.round(46 + k * 20)},${Math.round(96 + k * 30)},${Math.round(150 + k * 40)})`;
+          } else {
+            const base = t.bare ? [148, 136, 110] : [70, 96, 62];
+            const v = 0.45 + k * 0.85;
+            ctx.fillStyle = `rgb(${Math.round(base[0] * v)},${Math.round(base[1] * v)},${Math.round(base[2] * v)})`;
+          }
+          ctx.fillRect(ox + x * s, oy + y * s, s, s);
+          continue;
+        }
         if (t.type === TILE_EMPTY) {
           const v = Math.round(26 + t.ao * 22);
           ctx.fillStyle = `rgb(${v},${v + 3},${v + 7})`;

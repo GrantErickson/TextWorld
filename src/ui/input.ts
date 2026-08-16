@@ -23,6 +23,8 @@ export class Input {
     mouseDX: 0,
     mouseDY: 0,
     run: false,
+    jump: false,
+    lift: 0,
   };
 
   onLockChange: ((locked: boolean) => void) | null = null;
@@ -98,6 +100,13 @@ export class Input {
     if (this.down.has('ArrowLeft')) m.turn -= 1;
 
     m.run = this.down.has('ShiftLeft') || this.down.has('ShiftRight');
+
+    // Space both jumps and, while flying, climbs; holding it does the sensible
+    // thing in either case.
+    const rise = this.down.has('Space');
+    const sink = this.down.has('ControlLeft') || this.down.has('ControlRight') || this.down.has('KeyC');
+    m.jump = rise;
+    m.lift = (rise ? 1 : 0) - (sink ? 1 : 0);
 
     m.mouseDX = this.dx * MOUSE_YAW;
     m.mouseDY = this.dy * MOUSE_PITCH;

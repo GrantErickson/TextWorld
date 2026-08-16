@@ -210,7 +210,26 @@ const ENDLESS_STATION = `{
 }
 `;
 
+/**
+ * Outdoor worlds. Same `generate` block, but these themes build a heightmap
+ * from noise rather than solving for characters — so the land has elevation,
+ * and walking away and back gives you the same hills rather than new ones.
+ */
+const ENDLESS_WILDS = `{
+  "name": "Endless Wilds",
+  "generate": { "theme": "wilds", "seed": 2024 }
+}
+`;
+
+const ENDLESS_BADLANDS = `{
+  "name": "Endless Badlands",
+  "generate": { "theme": "badlands", "seed": 815 }
+}
+`;
+
 export const PRESETS: Preset[] = [
+  { id: 'gen-wilds', label: '∞ Wilds', source: ENDLESS_WILDS },
+  { id: 'gen-badlands', label: '∞ Badlands', source: ENDLESS_BADLANDS },
   { id: 'gen-catacombs', label: '∞ Catacombs', source: ENDLESS_CATACOMBS },
   { id: 'gen-caverns', label: '∞ Caverns', source: ENDLESS_CAVERNS },
   { id: 'gen-station', label: '∞ Station', source: ENDLESS_STATION },

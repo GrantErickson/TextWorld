@@ -15,6 +15,9 @@ import { lookupSprite } from './sprites.ts';
 import type { Theme } from './themes.ts';
 import { lookupTheme, themeIds } from './themes.ts';
 import { WfcModel, solveRegion } from './wfc.ts';
+import type { TerrainSample, TerrainThemeSpec } from './terrain.ts';
+import { lookupTerrainTheme, makeSample, sampleTerrain, terrainThemeIds } from './terrain.ts';
+import { hashi } from './noise.ts';
 
 /**
  * Streaming parameters.
@@ -48,6 +51,15 @@ const MIN_POCKET = 8;
 /** Props and lights are only instantiated near the player. */
 const LIGHT_CULL = 40;
 const PROP_CULL = 28;
+
+/**
+ * Biggest height change the player can walk over, in tiles. Terrain terraces
+ * are quantised well above this so that a ledge reads — and behaves — as a
+ * cliff rather than as a large step.
+ */
+const STEP_HEIGHT = 0.55;
+/** Outdoors, vegetation is placed further out: it is the view, not decoration. */
+const TERRAIN_PROP_CULL = 46;
 
 interface TileTemplate {
   type: TileType;
@@ -107,6 +119,16 @@ export class World {
   /** True when this world streams new terrain instead of being fixed. */
   infinite = false;
 
+  /** True for outdoor heightmap worlds, which render through a different path. */
+  terrain = false;
+
+  /** Directional light. Only terrain uses it; it is what shades the landform. */
+  sunX = 0;
+  sunY = 0;
+  sunZ = 1;
+  sunColor: RGB = rgb(255, 240, 210);
+  sunIntensity = 0;
+
   /**
    * Generator health. A solve that gives up still returns usable terrain, but
    * a rising failure count means the theme's sample is over-constrained and
@@ -143,6 +165,8 @@ export class World {
   private seed = 1;
   private openChar = -1;
   private lanternIndex = -1;
+  private terrainSpec: TerrainThemeSpec | null = null;
+  private readonly sample: TerrainSample = makeSample();
 
   private constructor(width: number, height: number, tiles: Tile[]) {
     this.width = width;
@@ -192,6 +216,59 @@ export class World {
         const dx = x - cx;
         const dy = y - cy;
         if (dx * dx + dy * dy < radius * radius) return false;
+      }
+    }
+    return true;
+  }
+
+  /** Elevation of the ground under a world position. Always 0 indoors. */
+  groundAt(x: number, y: number): number {
+    if (!this.terrain) return 0;
+    const t = this.tileAt(Math.floor(x), Math.floor(y));
+    return t ? t.height : 0;
+  }
+
+  /**
+   * Can the player move from one spot to another?
+   *
+   * Indoors this is just the solid test. Outdoors it also refuses height
+   * changes bigger than a step, which is what makes cliffs impassable without
+   * modelling them as walls — the same heightmap that draws the landscape
+   * decides where you can walk on it.
+   */
+  canStep(
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    radius: number,
+    feetZ?: number,
+  ): boolean {
+    if (!this.terrain) return this.canOccupy(toX, toY, radius);
+
+    // Outdoors the heightmap alone decides. Buildings need no special case:
+    // their walls are simply columns too tall to climb, which also means you
+    // may pass over one if you are flying above its roof.
+    //
+    // Only *upward* steps are refused. Blocking the way down as well was a
+    // mistake — it let you walk into a hollow you could then never leave, and
+    // a drop is not an obstacle, it is a fall.
+    const base = feetZ ?? this.groundAt(fromX, fromY);
+    const minX = Math.floor(toX - radius);
+    const maxX = Math.floor(toX + radius);
+    const minY = Math.floor(toY - radius);
+    const maxY = Math.floor(toY + radius);
+    for (let ty = minY; ty <= maxY; ty++) {
+      for (let tx = minX; tx <= maxX; tx++) {
+        const t = this.tileAt(tx, ty);
+        if (!t) return false;
+        // Only tiles the body actually overlaps matter.
+        const cx = Math.max(tx, Math.min(toX, tx + 1));
+        const cy = Math.max(ty, Math.min(toY, ty + 1));
+        const dx = toX - cx;
+        const dy = toY - cy;
+        if (dx * dx + dy * dy >= radius * radius) continue;
+        if (t.height - base > STEP_HEIGHT) return false;
       }
     }
     return true;
@@ -316,12 +393,15 @@ export class World {
   static fromSource(src: MapSource): World {
     if (src.generate) {
       const theme = lookupTheme(src.generate.theme);
-      if (!theme) {
+      const outdoor = theme ? null : lookupTerrainTheme(src.generate.theme);
+      if (!theme && !outdoor) {
         throw new MapError(
-          `Unknown theme "${src.generate.theme}". Available: ${themeIds().join(', ')}.`,
+          `Unknown theme "${src.generate.theme}". Available: ` +
+            `${[...themeIds(), ...terrainThemeIds()].join(', ')}.`,
         );
       }
-      const world = World.fromTheme(theme, src.generate.seed ?? 1);
+      const seed = src.generate.seed ?? 1;
+      const world = theme ? World.fromTheme(theme, seed) : World.fromTerrain(outdoor!, seed);
 
       // The theme sets the look; anything stated in the source wins over it.
       if (src.name !== undefined) world.name = src.name;
@@ -380,6 +460,14 @@ export class World {
             sky: false,
             doorId: -1,
             ao: 1,
+            height: 0,
+            nx: 0,
+            ny: 0,
+            nz: 1,
+            water: false,
+            side: null,
+            bare: false,
+            biome: 0,
           };
         } else if (entry?.wall) {
           tiles[i] = {
@@ -390,6 +478,14 @@ export class World {
             sky: false,
             doorId: -1,
             ao: 1,
+            height: 0,
+            nx: 0,
+            ny: 0,
+            nz: 1,
+            water: false,
+            side: null,
+            bare: false,
+            biome: 0,
           };
         } else if (entry) {
           tiles[i] = {
@@ -400,6 +496,14 @@ export class World {
             sky: entry.sky === true,
             doorId: -1,
             ao: 1,
+            height: 0,
+            nx: 0,
+            ny: 0,
+            nz: 1,
+            water: false,
+            side: null,
+            bare: false,
+            biome: 0,
           };
         } else {
           // Unlisted characters: whitespace and '.' are open floor, anything
@@ -413,6 +517,14 @@ export class World {
             sky: false,
             doorId: -1,
             ao: 1,
+            height: 0,
+            nx: 0,
+            ny: 0,
+            nz: 1,
+            water: false,
+            side: null,
+            bare: false,
+            biome: 0,
           };
         }
       }
@@ -487,6 +599,8 @@ export class World {
         def,
         x: e.x,
         y: e.y,
+        z: 0,
+        tint: null,
         path: (e.path ?? []) as Array<[number, number]>,
         pathIndex: 0,
         speed: e.speed ?? 0,
@@ -519,6 +633,209 @@ export class World {
     }
 
     return world;
+  }
+
+  // --------------------------------------------------------- outdoor worlds
+
+  /**
+   * Build a streamed outdoor world. Shares the sliding window and the light
+   * culling with the dungeon generator; only the way tiles are produced
+   * differs — noise per tile instead of a constraint solve, which is both far
+   * cheaper and stable across revisits.
+   */
+  static fromTerrain(spec: TerrainThemeSpec, seed: number): World {
+    const tiles: Tile[] = new Array(WINDOW * WINDOW);
+    const world = new World(WINDOW, WINDOW, tiles);
+
+    world.infinite = true;
+    world.terrain = true;
+    world.terrainSpec = spec;
+    world.seed = seed >>> 0;
+    world.name = spec.label;
+
+    world.ambient = spec.ambient;
+    world.ambientColor = parseColor(spec.ambientColor, world.ambientColor);
+    world.exposure = spec.exposure;
+    world.fogColor = parseColor(spec.fogColor, world.fogColor);
+    world.fogDensity = spec.fogDensity;
+    world.skyTop = parseColor(spec.skyTop, world.skyTop);
+    world.skyHorizon = parseColor(spec.skyHorizon, world.skyHorizon);
+    world.starDensity = spec.stars;
+
+    const sl = Math.hypot(spec.sun.x, spec.sun.y, spec.sun.z) || 1;
+    world.sunX = spec.sun.x / sl;
+    world.sunY = spec.sun.y / sl;
+    world.sunZ = spec.sun.z / sl;
+    world.sunColor = parseColor(spec.sun.color, rgb(255, 240, 210));
+    world.sunIntensity = spec.sun.intensity;
+
+    world.originX = -(WINDOW >> 1);
+    world.originY = -(WINDOW >> 1);
+    world.buildTerrain();
+
+    // Prefer to start on cleared ground — a road or a yard. Dropping the
+    // player into the middle of a thicket means the first thing they see is
+    // the inside of a tree.
+    const spot = world.findClearNear(0, 0) ?? world.findOpenNear(0, 0) ?? [0, 0];
+    world.spawnX = spot[0] + 0.5;
+    world.spawnY = spot[1] + 0.5;
+    world.spawnAngle = world.openestAngle(world.spawnX, world.spawnY);
+    world.populateTerrain(world.spawnX, world.spawnY);
+
+    return world;
+  }
+
+  /** Regenerate every tile in the window from the noise fields. */
+  private buildTerrain(): void {
+    const spec = this.terrainSpec;
+    if (!spec) return;
+    const s = this.sample;
+    const w = this.width;
+    const h = this.height;
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        sampleTerrain(spec, this.originX + x, this.originY + y, this.seed, s);
+        this.tiles[y * w + x] = {
+          // Solid tiles are building walls; open ground is walkable whatever
+          // its elevation, with the step rule deciding what you can climb.
+          type: s.solid ? TILE_WALL : TILE_EMPTY,
+          wall: s.solid ? s.side : null,
+          floor: s.surface,
+          ceiling: s.surface,
+          sky: true,
+          doorId: -1,
+          ao: 1,
+          height: s.height,
+          nx: 0,
+          ny: 0,
+          nz: 1,
+          water: s.water,
+          side: s.side,
+          bare: s.bare,
+          biome: s.biome,
+        };
+      }
+    }
+
+    this.bakeNormals();
+  }
+
+  /**
+   * Surface normals from the height field.
+   *
+   * Without these every top surface is horizontal and shades identically, so a
+   * hillside reads as a flat plain in a slightly different colour. The normal
+   * is what lets the sun describe the shape of the land.
+   */
+  private bakeNormals(): void {
+    const w = this.width;
+    const h = this.height;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const t = this.tiles[y * w + x];
+        const hl = this.tiles[y * w + Math.max(0, x - 1)].height;
+        const hr = this.tiles[y * w + Math.min(w - 1, x + 1)].height;
+        const hu = this.tiles[Math.max(0, y - 1) * w + x].height;
+        const hd = this.tiles[Math.min(h - 1, y + 1) * w + x].height;
+        // Central differences over two tiles.
+        const dx = (hl - hr) * 0.5;
+        const dy = (hu - hd) * 0.5;
+        const len = Math.hypot(dx, dy, 1) || 1;
+        t.nx = dx / len;
+        t.ny = dy / len;
+        t.nz = 1 / len;
+      }
+    }
+  }
+
+  /** Scatter vegetation, rocks and settlement fires around the player. */
+  private populateTerrain(px: number, py: number): void {
+    const spec = this.terrainSpec;
+    if (!spec) return;
+    this.lights.length = 0;
+    this.entities.length = 0;
+
+    this.lights.push(
+      makeLight(px, py, spec.lantern.radius, spec.lantern.color, spec.lantern.intensity, 0, 0, -1),
+    );
+    this.lanternIndex = 0;
+
+    const x0 = Math.floor(px - TERRAIN_PROP_CULL);
+    const x1 = Math.floor(px + TERRAIN_PROP_CULL);
+    const y0 = Math.floor(py - TERRAIN_PROP_CULL);
+    const y1 = Math.floor(py + TERRAIN_PROP_CULL);
+
+    for (let wy = y0; wy <= y1 && this.entities.length < 460; wy++) {
+      for (let wx = x0; wx <= x1 && this.entities.length < 460; wx++) {
+        // Circular, not square: the corners of the box are half again as far
+        // away as the sides, and filling them first starves the view ahead.
+        const ddx = wx + 0.5 - px;
+        const ddy = wy + 0.5 - py;
+        if (ddx * ddx + ddy * ddy > TERRAIN_PROP_CULL * TERRAIN_PROP_CULL) continue;
+        const t = this.tileAt(wx, wy);
+        if (!t || t.type !== TILE_EMPTY) continue;
+        if (t.bare || t.water) continue;
+        // Nothing grows on a cliff face.
+        if (t.nz < 0.72) continue;
+
+        const biome = spec.biomes[t.biome] ?? spec.biomes[0];
+        const roll = (hashi(wx, wy, this.seed ^ 0x5bf03635) % 100000) / 100000;
+        let sprite: string | null = null;
+        if (roll < biome.trees) sprite = biome.treeSprite;
+        else if (roll < biome.trees + biome.shrubs) sprite = biome.shrubSprite;
+        else if (roll < biome.trees + biome.shrubs + biome.rocks) sprite = biome.rockSprite;
+        if (!sprite) continue;
+
+        const def = lookupSprite(sprite);
+        if (!def) continue;
+        const jx = ((hashi(wx, wy, 0x1111) % 1000) / 1000 - 0.5) * 0.55;
+        const jy = ((hashi(wx, wy, 0x2222) % 1000) / 1000 - 0.5) * 0.55;
+        this.entities.push({
+          index: this.entities.length,
+          def,
+          x: wx + 0.5 + jx,
+          y: wy + 0.5 + jy,
+          z: t.height,
+          tint: biome.tint ? parseColor(biome.tint, def.color) : null,
+          path: [],
+          pathIndex: 0,
+          speed: 0,
+          bob: 0,
+          bobPhase: 0,
+          lightIndex: -1,
+        });
+      }
+    }
+
+    // A fire in each settlement yard, so villages read at night and at range.
+    const spacing = 26;
+    for (let by = Math.floor((py - LIGHT_CULL) / spacing); by <= Math.floor((py + LIGHT_CULL) / spacing); by++) {
+      for (let bx = Math.floor((px - LIGHT_CULL) / spacing); bx <= Math.floor((px + LIGHT_CULL) / spacing); bx++) {
+        if (this.lights.length >= 40) break;
+        const hx = hashi(bx, by, this.seed ^ 0x1d7f);
+        const tx = bx * spacing + (hx % spacing);
+        const ty = by * spacing + ((hx >>> 9) % spacing);
+        const t = this.tileAt(tx, ty);
+        // Only where the ground has been cleared — a yard or a road.
+        if (!t || t.type !== TILE_EMPTY || !t.bare || t.water) continue;
+        const dx = tx + 0.5 - px;
+        const dy = ty + 0.5 - py;
+        if (dx * dx + dy * dy > LIGHT_CULL * LIGHT_CULL) continue;
+        this.lights.push(
+          makeLight(
+            tx + 0.5,
+            ty + 0.5,
+            spec.torch.radius,
+            spec.torch.color,
+            spec.torch.intensity,
+            spec.torch.flicker,
+            hashi(tx, ty, 0x2f1c) & 0xffff,
+            -1,
+          ),
+        );
+      }
+    }
   }
 
   // -------------------------------------------------------- infinite worlds
@@ -579,6 +896,24 @@ export class World {
     const dx = nox - this.originX;
     const dy = noy - this.originY;
     if (dx === 0 && dy === 0) return;
+
+    if (this.terrain) {
+      // Noise is a pure function of position, so there is nothing to carry
+      // over and nothing to stitch: regenerate the window outright. It is far
+      // cheaper than a constraint solve, and it is why walking away and coming
+      // back gives you the same hills rather than new ones.
+      this.originX = nox;
+      this.originY = noy;
+      this.buildTerrain();
+      this.populateTerrain(px, py);
+      this.markLightsDirty();
+      const at = this.findOpenNear(Math.floor(px), Math.floor(py));
+      if (at) {
+        this.spawnX = at[0] + 0.5;
+        this.spawnY = at[1] + 0.5;
+      }
+      return;
+    }
 
     // Carry over the overlap; everything else comes back as "not generated".
     const w = this.width;
@@ -963,6 +1298,14 @@ export class World {
         sky: t ? t.sky : false,
         doorId: -1,
         ao: 1,
+        height: 0,
+        nx: 0,
+        ny: 0,
+        nz: 1,
+        water: false,
+        side: null,
+        bare: false,
+        biome: 0,
       };
     }
   }
@@ -1020,6 +1363,38 @@ export class World {
       }
     }
     return best;
+  }
+
+  /**
+   * Nearest open road: cleared ground that is not water and not hemmed in by
+   * building walls. Cleared-but-walled ground is a courtyard, and starting
+   * inside one means the view opens onto a wall a metre away.
+   */
+  private findClearNear(wx: number, wy: number): [number, number] | null {
+    for (let r = 0; r < 40; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const x = wx + dx;
+          const y = wy + dy;
+          const t = this.tileAt(x, y);
+          if (!t || t.type !== TILE_EMPTY || !t.bare || t.water) continue;
+          let walled = false;
+          for (let sy = -3; sy <= 3 && !walled; sy++) {
+            for (let sx = -3; sx <= 3; sx++) {
+              const n = this.tileAt(x + sx, y + sy);
+              if (n && n.type !== TILE_EMPTY) {
+                walled = true;
+                break;
+              }
+            }
+          }
+          if (walled) continue;
+          if (this.canOccupy(x + 0.5, y + 0.5, 0.24)) return [x, y];
+        }
+      }
+    }
+    return null;
   }
 
   private findOpenNear(wx: number, wy: number): [number, number] | null {
@@ -1122,6 +1497,8 @@ export class World {
           def,
           x: wx + 0.5 + jx,
           y: wy + 0.5 + jy,
+          z: 0,
+          tint: null,
           path: [],
           pathIndex: 0,
           speed: 0,

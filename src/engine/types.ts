@@ -43,6 +43,25 @@ export interface Tile {
   doorId: number;
   /** Baked ambient occlusion for the floor/ceiling of this tile, 0..1. */
   ao: number;
+
+  // ------------------------------------------------- outdoor worlds only
+  /**
+   * Elevation of this tile's top surface, in tiles. Always 0 for indoor maps,
+   * which keeps the flat-floor renderer exactly as it was.
+   */
+  height: number;
+  /** Surface normal, baked from neighbouring heights. Drives the sun term. */
+  nx: number;
+  ny: number;
+  nz: number;
+  /** Shallow water: walkable, but shaded and textured as a river surface. */
+  water: boolean;
+  /** Material of the vertical face where this tile steps up from its neighbour. */
+  side: Material | null;
+  /** Cleared ground — road, yard, riverbed. Nothing is scattered on it. */
+  bare: boolean;
+  /** Index into the theme's biome list; selects what grows here. */
+  biome: number;
 }
 
 export interface Door {
@@ -117,6 +136,14 @@ export interface Entity {
   def: SpriteDef;
   x: number;
   y: number;
+  /** Ground elevation the sprite stands on. 0 for indoor maps. */
+  z: number;
+  /**
+   * Overrides the sprite definition's colour. Sprite art carries one palette,
+   * but the same shrub should be sage in a desert and deep green in a forest,
+   * and drawing a second set of art per biome is a poor trade for a tint.
+   */
+  tint: RGB | null;
   /** Waypoint loop in world coordinates; empty for static props. */
   path: Array<[number, number]>;
   pathIndex: number;

@@ -55,6 +55,89 @@ attenuation, wrap-around diffuse (pure Lambert goes black at grazing angles,
 which at this resolution reads as an artefact), fog, baked corner occlusion,
 and a filmic tone map so bright pools do not flatten to white.
 
+## Outdoor worlds (heightmap terrain)
+
+Outdoor worlds are the second generator kind. Where the dungeon themes solve
+for *characters*, the wilds evaluate **noise per tile**, which is a pure
+function of absolute coordinates and a seed. That has a property WFC cannot
+offer: walk away and come back and the terrain is bit-identical, because
+nothing is remembered — it is recomputed.
+
+### The world is a heightmap
+
+Every tile carries a `height` (its top surface, in tiles) and a surface normal
+baked from its neighbours. That single field expresses everything the request
+asked for:
+
+- **hills and valleys** — smooth noise
+- **cliffs** — terraced height in the highland biomes, quantised past what the
+  player can step up
+- **rivers** — a ridge-noise channel carved below the local ground, flagged
+  `water`
+- **buildings** — columns tall enough to be unclimbable, with a wall material
+  on the side faces and a roof on top
+- **roads** — a ridge-noise band that flattens height and swaps the material
+
+Walkability is derived rather than authored: you may step up or down by
+`STEP_HEIGHT`, so a gentle slope walks and a cliff does not. Buildings are just
+very tall columns, so nothing special is needed to keep you out of them.
+
+### Getting around, and not getting stuck
+
+Movement outdoors is decided entirely by the heightmap: `canStep` refuses a
+move when the destination ground is more than `STEP_HEIGHT` **above your
+feet**. Three details matter, and the first two were bugs:
+
+- **Only upward steps are refused.** Blocking large drops as well seemed
+  symmetrical and was wrong — it let you walk down into a hollow you could
+  then never leave. A drop is a fall, not an obstacle.
+- **The comparison is against the feet, not the ground you came from.** That
+  one parameter is what makes jumping work: while airborne you clear whatever
+  you are above, but walking into a cliff face still stops you.
+- **Buildings need no special case.** Their walls are columns too tall to
+  climb, so the same rule keeps you out — and lets you fly over the roof.
+
+Even so, terrain can produce a hollow no jump can leave, and tuning the
+generator until that is impossible would cost more than it is worth. Flight
+(`F`) is the escape hatch, and doubles as the best way to look at a landscape.
+Jump height is deliberately set between the two terrace sizes: it clears a
+temperate 0.95-tile ledge and not a badlands 1.35-tile one, so cliffs still
+mean something.
+
+Indoors the eye is clamped between floor and ceiling. The flat-floor passes
+project both planes *from the eye height*, so outside that band the geometry
+folds through itself.
+
+### Rendering non-level ground
+
+The indoor path assumes a flat floor at z=0, a ceiling at z=1 and an eye at
+z=0.5, and casts floors *by screen row* because every cell in a row is the same
+distance away. None of that survives variable height, so terrain uses a
+separate path: a per-column march with a **y-buffer**, the classic voxel-
+landscape algorithm.
+
+Marching front to back, each cell contributes at most two things: a vertical
+**face** where the ground steps up from the previous cell, and its **top
+surface** spanning the distances the ray is inside it. Both are clipped to the
+rows not yet painted, and the buffer only ever moves up the screen. Occlusion
+falls out for free — standing on a plateau, the valley immediately below the
+edge is correctly hidden until it clears your line of sight — and the sky is
+whatever rows are left over.
+
+Two rules are easy to get wrong:
+
+- A cell's top surface is only visible when its height is **below the eye**. At
+  or above eye level you see the face and nothing else; drawing a top there
+  renders the underside of a solid.
+- Texture and lighting must be sampled **per row**, inverting the projection to
+  get the distance for that row. One sample per span looks fine on flat ground
+  and smears badly on a slope.
+
+Terrain also needs a **sun**: point lights alone leave hills unreadable,
+because every top surface is horizontal and shades identically. The sun is a
+directional term using each tile's baked normal, which is what makes the
+landform legible.
+
 ## Infinite worlds (Wave Function Collapse)
 
 A map source may replace `grid` with a `generate` block, which streams an
@@ -219,6 +302,30 @@ Data flow per frame:
     npm run typecheck  # tsc --noEmit
     npm run build      # typecheck + production build to dist/
 
+## Tests
+
+`npm test` runs 38 tests via `node --test` — no framework, no browser, because
+the engine is DOM-free. `npm run build` runs them between the typecheck and the
+bundle.
+
+They deliberately cover the things that **fail silently**, which is most of
+what went wrong while building this. A world with no rivers, terrain quietly
+compressed to a tenth of its amplitude, a solver falling back on every call, a
+sealed-off room, a spawn inside rock — all of these produce a perfectly valid
+world that merely looks wrong, and none of them fail a typecheck. Notable:
+
+- `terrain.test.ts` asserts a tile depends only on its coordinates, which is
+  the property the endless outdoor world rests on.
+- `world.test.ts` walks a world away and back and asserts the land came back
+  identical, and drives the real `Camera` for 600 frames asserting it never
+  ends up inside geometry.
+- `shading.test.ts` checks a cell reconstructs the colour it was given, and
+  that an unchanged scene produces a byte-identical buffer.
+
+When tuning a theme's sample art or a noise threshold, run the tests: the
+"every biome occurs" and "every theme solves cleanly" cases are what catch a
+threshold that has drifted out of range.
+
 ## Status
 
 Complete and working end to end. The app builds, runs, and renders.
@@ -229,10 +336,15 @@ Verified:
 - All six presets build headlessly and pass structural checks: no ragged grid
   rows, door axes correct, spawns legal, no light or entity buried in a wall,
   and no open tile unreachable from the spawn.
-- Generated worlds: 0 WFC fallbacks on all three themes; 100% of open tiles
+- Generated dungeons: 0 WFC fallbacks on all three themes; 100% of open tiles
   reachable after 30,000 frames of collision-driven walking; window shifts cost
   ~75-80 ms and happen roughly once a minute of walking; render stays ~1-2 ms
   with 25-48 lights. All three verified by eye in a browser.
+- Outdoor worlds: both themes verified by eye; terrain spans ~13 tiles of
+  elevation with ~6% of neighbouring steps too tall to climb; rivers, roads,
+  buildings and all four biomes occur; the land is bit-identical after walking
+  away and back. Streaming an outdoor window is a full regenerate and costs far
+  less than a WFC solve, since noise is evaluated per tile rather than solved.
 - Rendered in headless Chrome; viewport, minimap, telemetry and live editor all
   work. Interior and outdoor (sky + stars) scenes both confirmed by eye.
 - **Stability measured**, since that was the hardest requirement. Per frame, on
