@@ -105,6 +105,27 @@ export interface Tile {
   storeys: number;
   /** Inside a building's footprint rather than on its wall. */
   interior: boolean;
+  /**
+   * Surface of a floor *inside* the column, where that is not the same thing
+   * as the top of the column. `floor` stays the top — the roof, the street,
+   * the hillside — so every world that has only one surface per tile carries
+   * nothing new here and reads exactly the field it always did.
+   */
+  innerFloor: Material | null;
+  /**
+   * Position along a flight of stairs, 1-based, or 0 for anything that is not
+   * a stair. A stair column is a tread at this fraction of the way up every
+   * storey rather than a slab at each of them, which is the whole of what
+   * makes it climbable.
+   */
+  stair: number;
+  /**
+   * A way through a wall rather than a gap in it: open from the floor to the
+   * head, solid from there to the roof. Without the head the opening is the
+   * whole height of the storey, which reads as a shopfront window rather than
+   * as somewhere you walk in.
+   */
+  doorway: boolean;
 }
 
 export interface Door {

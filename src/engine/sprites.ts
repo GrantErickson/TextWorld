@@ -479,6 +479,74 @@ export const SPRITES: Record<string, SpriteDef> = {
     '##..........##',
   ], 0, 'panel', false, undefined, undefined, 1.1),
 
+  // ---- furniture. Everything in here is seen from a metre or two away in a
+  // room a few tiles across, so the art is squat and reads by silhouette: a
+  // table is a slab on legs, a shelf is a stack of lines. Detail finer than
+  // that is thrown away by the cell grid at the distances these are seen at.
+  table: def('table', [124, 96, 68], 1.15, 0.72, 0, [
+    '::::::::::::',
+    '############',
+    '############',
+    ' #        # ',
+    ' #        # ',
+    ' #        # ',
+  ], 0, 'planks'),
+
+  chair: def('chair', [110, 86, 62], 0.42, 0.86, 0, [
+    '######',
+    '######',
+    '#....#',
+    '######',
+    '######',
+    '#    #',
+    '#    #',
+  ], 0, 'planks'),
+
+  shelf: def('shelf', [102, 82, 60], 0.95, 1.85, 0, [
+    '##########',
+    '#::::::::#',
+    '#.######.#',
+    '##########',
+    '#::::::::#',
+    '#.######.#',
+    '##########',
+    '#::::::::#',
+    '#.######.#',
+    '##########',
+  ], 0, 'planks'),
+
+  counter: def('counter', [96, 92, 88], 1.5, 1.02, 0, [
+    '::::::::::::::',
+    '##############',
+    '##############',
+    '#.##########.#',
+    '#.##########.#',
+    '#.##########.#',
+    '##############',
+  ], 0, 'panel'),
+
+  // The one warm thing in a room, and the only interior prop that carries any
+  // light of its own — a desk lamp reads as somewhere someone works.
+  desklamp: def('desklamp', [188, 154, 96], 0.34, 0.62, 0, [
+    ' @@@@ ',
+    '@@@@@@',
+    ' :##: ',
+    '  ##  ',
+    '  ##  ',
+    ' #### ',
+  ], 0.55, 'panel'),
+
+  houseplant: def('houseplant', [86, 122, 72], 0.55, 1.05, 0, [
+    ' .:##:. ',
+    '.######.',
+    '########',
+    ' :####: ',
+    '   ##   ',
+    '  ####  ',
+    '  ####  ',
+    ' ###### ',
+  ], 0, 'foliage'),
+
   bin: def('bin', [92, 100, 96], 0.55, 0.85, 0, [
     ' :######: ',
     '##########',

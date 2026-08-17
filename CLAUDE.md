@@ -165,28 +165,40 @@ Per column, each tile can contribute:
    a lattice point every few seconds of walking. The snapshot has to be taken
    *before* the entity list is cleared, which is a mistake that fails silently
    and which `city.test.ts` now checks by object identity.
-4. **Not started — the one piece left.** Seamless interiors. Everything else
-   in the city is done. `Tile.storeys` and `Tile.interior` are generated and
-   carried through already, so the data exists; what does not exist is any
-   ability in the renderer to draw an underside.
+4. **Done.** Seamless interiors. You can walk in off the street, through
+   rooms with walls, doorways and furniture, and up a flight of stairs to the
+   floor above.
 
    The order to do it in, each step leaving the tree working:
 
-   1. **`spansAt(wx, wy)` on World** — returns the solid intervals of a
-      column. For everything that is not a hollow building this is the single
-      span it is today, so the whole engine keeps its current behaviour and
-      the step is verifiable by a test asserting exactly that.
-   2. **Coverage mask in `drawTerrain`** — replace `yBuf` with a per-column
-      done mask plus a count of unresolved rows, and start drawing the
-      *underside* of spans above the eye. With one span per column this is
-      provably the same picture, which is the point: it can be landed and
-      checked before any building is hollowed out.
-   3. **Hollow the ground floor** — perimeter tiles stay solid, interior tiles
-      get a floor at pavement level and a ceiling slab a storey up, with one
-      gap in the perimeter for a door. First moment anything is visibly
-      different, and it exercises ceilings and interior lighting.
-   4. **Stack storeys, then stairs** — slabs every STOREY, a stairwell column
-      with no slabs and a stepped floor to climb.
+   1. **Done.** **`spansAt(wx, wy)` on World** — returns the solid intervals
+      of a column. For everything that is not a hollow building this is the
+      single span it is today, so the whole engine keeps its current
+      behaviour, and a test asserts exactly that. `spansOf` is the same thing
+      for a caller that already holds the tile; the terrain march does, and
+      the second lookup was worth removing.
+   2. **Done.** **Coverage mask in `drawTerrain`, then undersides** — the
+      y-buffer became a per-column done mask plus a count of unresolved rows
+      (2a), and the march then moved from one height per tile to the span
+      list, drawing the underside of every span above the eye (2b). Both are
+      no-ops with one span per column, and both were checked that way rather
+      than assumed: all 26,600 cells of a five-heading city sweep come back
+      identical, and the wilds render to a byte-identical buffer.
+   3. **Done.** **Hollow the ground floor** — two thirds of a building's tiles
+      became a room with a floor at pavement level and a slab overhead, the
+      frontage got openings every `DOOR_EVERY` tiles, and collision started
+      answering per storey. You can walk in off the street. 39 of 45 buildings
+      in a window are openable; what is left is lots with no street frontage at
+      all, which is invisible from outside.
+   4. **Done.** **Rooms, doorways and furniture** — the footprint is divided on
+      the lot's own lattice, a partition every `ROOM_PITCH` cells, each stretch
+      of wall pierced once at a hashed position. 96% of interior floor is still
+      reachable from the street. Seven pieces of furniture, sparse, big things
+      against a wall.
+   5. **Done.** **Stairs** — a run of `STAIR_RUN` treads along one row of the
+      lot, one flight per storey, all running the same way. 29 of 39 buildings
+      in a window have a full flight; the rest are lots their block clipped too
+      short to fit one.
 
    Collision follows the same span list: which storey you are on is whichever
    span your feet are standing on, and `canStep` compares against the surface
@@ -194,6 +206,96 @@ Per column, each tile can contribute:
 
 Steps 1-2 fit the existing renderer, so the city is walkable and lit before the
 largest and riskiest piece starts.
+
+The way in is a real door — `Tile.doorway` makes the column open to head
+height and solid above — and the floors above the first are furnished and lit
+like the ground one.
+
+### Three things a building with an inside taught the rest of the engine
+
+- **Walls come from the neighbours, not from the lot rectangle.** A lot is
+  `LOT` tiles square, so the outermost ring looks like the obvious wall — and
+  it is wrong in the one place it matters. Lots are measured from whichever
+  street is *nearer*, so a block is subdivided from both edges and the two
+  grids meet in the middle; the leftover lot on each side is whatever width was
+  left, its far edge is not a lot boundary, and every tile along that seam
+  passes the rectangle test while its neighbour across the seam belongs to a
+  different building. `lotIdAt` asks each of the four neighbours for its lot
+  key instead, which needs no district or density noise because a lot is
+  uniformly built or open.
+- **Nothing gets the sun through a floor above it.** The terrain pass added a
+  directional term to every top surface and every face, because until interiors
+  every surface in a city was outdoors. An interior floor was lit by direct
+  sunlight through its own ceiling, and came out 40% brighter than that ceiling
+  — a lit floor under a void. A top surface is exposed when it is the highest
+  span of its column, an underside never is, and a face is exposed when it
+  stands above everything in the column the light would cross to reach it.
+- **A room needs a lamp, and darker surfaces than the street.** It has no sun
+  in it and the city's ambient is set for open air, so with light surfaces the
+  ambient carries the frame and everything lands in one narrow band. Both
+  failures — no lamp at all, and a lamp over a surface too light — measure as a
+  wash. `spans.test.ts` pins it by rendering a room and refusing a frame whose
+  commonest glyph holds over 60% of it.
+- **Anything laid out inside a building goes on the *lot's* lattice, never on
+  a lattice over the world.** Lamps were placed on a world lattice while a
+  footprint was one big room, and partitioning broke it silently: one point per
+  thirty-six tiles against a room of sixteen left better than half the rooms
+  dark, and which ones depended on where the lot happened to fall. `isRoomLamp`
+  answers from the lot's own cell coordinates, so there is exactly one per room
+  however the lots land.
+- **Lighting a long thin space needs its own anchors, and the test for it has
+  to measure evenness.** A stairwell is nine cells of open shaft; the room
+  lattice gives it lamps at one end and the foot of the flight comes out at a
+  fifth of the light the middle gets. Two obvious assertions both pass anyway —
+  "within a lamp's radius" (being inside a radius is not being lit) and "above
+  ambient" (every lamp in here is strong). Darkest against middling is what
+  actually catches it.
+- **Every flight of stairs runs the same way, and the run length is
+  arithmetic.** A flight climbs a whole STOREY, so a run of N tiles has treads
+  STOREY/N apart, and anything past STEP_HEIGHT is a staircase that renders
+  perfectly and cannot be walked up. A switchback is the obvious shape and does
+  not fit a tile grid: its treads over one tile end up STOREY/N apart *at the
+  turn*, which is a step's worth of headroom where you have to walk under one.
+  All flights the same way puts consecutive treads a whole storey apart; the
+  price is walking back along each floor, which a straight-run stair core makes
+  you do anyway.
+- **A building stands on one level, taken at the middle of its lot.** Following
+  the ground per tile tilts every floor and every roof by however much the land
+  moves across the lot. That went unnoticed through the entire skyline and was
+  fatal to stairs: the top of a flight missed its landing by 0.43 of the 0.55 a
+  leg has.
+- **Collision has to look *up* by a step as well as down.** A stair tile in a
+  tall building carries a tread per flight, one above another, and picking the
+  one you stand on by looking only downward finds the tread of the flight
+  below — so stepping off a landing walks you into the stairwell. `surfaceOf`
+  takes the highest surface within a step's reach; refusing still works because
+  nothing in reach falls through to the lowest surface there is, which is by
+  definition further than a step.
+- **Furniture has to be far sparser than a plan suggests.** Half the wall tiles
+  occupied looks right drawn from above and is unusable in the view: a shelf a
+  tile and a half wide at less than a tile's range fills two thirds of the
+  screen. About a fifth of tiles, big things against a wall, small things in
+  the middle.
+
+The interior lamp is the one place in this engine where the average lies. Tuned
+on frame percentiles the lamp wants to be half again brighter than it is, and a
+wall standing under one then renders as a featureless white sheet worth 0.4% of
+cells — invisible in the numbers, immediate in a screenshot.
+
+Two things about the march are worth knowing before touching it again, because
+both were wrong in the first draft of step 2b:
+
+- **A face is a set difference, not a height comparison.** Visible wall is
+  where this column is solid and the one before it is not. With one span
+  apiece that reduces to the single interval between the two heights, which is
+  what the old code computed; with slabs it is several intervals, and the gaps
+  are exactly the strips a slab already hides.
+- **Surfaces have to be offered to the mask in the order a ray meets them**,
+  which is not the order the spans are in. Below the eye a *higher* plane is
+  crossed at a shorter distance than a lower one; above the eye it is the
+  other way about. So tops run downward from eye level and undersides upward,
+  and since tops land below the horizon and undersides above it, the two runs
+  never contend for a row.
 
 ### Two things step 2 added that the rest of the engine now depends on
 
@@ -569,7 +671,7 @@ Data flow per frame:
 
 ## Tests
 
-`npm test` runs 56 tests via `node --test` — no framework, no browser, because
+`npm test` runs 98 tests via `node --test` — no framework, no browser, because
 the engine is DOM-free. `npm run build` runs them between the typecheck and the
 bundle.
 
@@ -678,6 +780,15 @@ text dump and obvious in a screenshot.
 Remaining / not done:
 
 - No CI.
+- **Buildings are furnished and lit one storey at a time**, the one the player
+  is on, because a tall one would otherwise spend the whole light budget on
+  rooms sealed behind a slab. A change of floor therefore repopulates, which
+  costs what a window shift costs. Nothing carries over between storeys, so a
+  room is re-arranged each time you pass through it on the way up — invisible
+  in practice, and it would not be if anything in a room could be moved.
+- Buildings with no street frontage at all — in the middle of a block — are
+  sealed, and lots their block clipped too short get no stairs. Both are
+  invisible from outside, so neither is worth a special case yet.
 - **Water basins cannot merge.** Two that brim over into one another share a
   level only because `pool` rounds them together, not because anything computed
   a spill point. The proper fix is a depression-filling pass — priority flood

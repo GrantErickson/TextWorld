@@ -9,9 +9,11 @@ import assert from 'node:assert/strict';
 
 import {
   CITY_THEMES,
+  LOT_STREET,
   SIGNAL_GREEN,
   STOREY,
   districtAt,
+  lotIdAt,
   makeCitySample,
   makeStreetInfo,
   sampleCity,
@@ -305,11 +307,13 @@ test('you can walk onto a pavement without jumping', () => {
       for (let i = 0; i < 180; i++) cam.update(1 / 60, push, world, 40);
       if (cam.x - from < 1.5) failed++;
 
-      // And the eye must rest a full eye-height above the ground, not part of one.
-      assert.ok(
-        Math.abs(cam.z - (world.groundAt(cam.x, cam.y) + world.eyeHeight)) < 0.06,
-        `eye settled at ${cam.z.toFixed(3)}, not ${(world.groundAt(cam.x, cam.y) + world.eyeHeight).toFixed(3)}`,
-      );
+      // And the eye must rest a full eye-height above the ground, not part of
+      // one. Measured against the surface the feet are actually on: three
+      // seconds of walking is enough to cross the pavement and go in through a
+      // shop door, and the column's `height` up there is the roof.
+      const feet = cam.z - world.eyeHeight;
+      const rest = world.bedAt(cam.x, cam.y, feet) + world.eyeHeight;
+      assert.ok(Math.abs(cam.z - rest) < 0.06, `eye settled at ${cam.z.toFixed(3)}, not ${rest.toFixed(3)}`);
       break;
     }
   }
@@ -329,7 +333,16 @@ test('buildings have a ground floor distinct from the storeys above', () => {
   for (let y = -120; y < 120; y += 2) {
     for (let x = -120; x < 120; x += 2) {
       sampleCity(spec, x, y, SEED, s, info);
-      if (s.storeys <= 0) continue;
+      // Frontage only. What is inside a building has no shop to put on it,
+      // and neither has a partition between two of its rooms — asking for a
+      // street on one side is what tells those apart from a facade.
+      if (s.storeys <= 0 || s.interior) continue;
+      const faces =
+        lotIdAt(x - 1, y, SEED) === LOT_STREET ||
+        lotIdAt(x + 1, y, SEED) === LOT_STREET ||
+        lotIdAt(x, y - 1, SEED) === LOT_STREET ||
+        lotIdAt(x, y + 1, SEED) === LOT_STREET;
+      if (!faces) continue;
       built++;
       if (!s.sideLower) continue;
       shopfronts++;
@@ -342,6 +355,31 @@ test('buildings have a ground floor distinct from the storeys above', () => {
   assert.ok(built > 0);
   assert.equal(shopfronts, built, 'some buildings have no ground floor');
   assert.ok(signs > 0 && signs < built * 0.6, `${signs} of ${built} lots are signed`);
+
+  // And the band has to survive the trip into the tile, which is the half of
+  // this that actually failed: the sample computed a shopfront for every lot
+  // and the tile builder dropped it, so the renderer's lower-band test never
+  // once fired and every facade came out in one skin. Asserting on the sample
+  // alone cannot see that; the renderer reads the tile.
+  const world = World.fromCity(spec, SEED);
+  let fronts = 0;
+  for (let y = world.originY + 1; y < world.originY + world.height - 1; y++) {
+    for (let x = world.originX + 1; x < world.originX + world.width - 1; x++) {
+      const t = world.tileAt(x, y);
+      if (!t || t.storeys <= 0 || t.interior) continue;
+      if (
+        lotIdAt(x - 1, y, SEED) !== LOT_STREET &&
+        lotIdAt(x + 1, y, SEED) !== LOT_STREET &&
+        lotIdAt(x, y - 1, SEED) !== LOT_STREET &&
+        lotIdAt(x, y + 1, SEED) !== LOT_STREET
+      ) {
+        continue;
+      }
+      fronts++;
+      assert.ok(t.sideLower !== null && t.bandZ > 0, `the frontage at (${x}, ${y}) lost its ground floor`);
+    }
+  }
+  assert.ok(fronts > 0, 'no frontage in the window');
 });
 
 test('windows and signs light up only as it gets dark', () => {
@@ -380,17 +418,25 @@ test('districts differ in more than the size of the same thing', () => {
   const s = makeCitySample();
   const info = makeStreetInfo();
   const tallest = [0, 0, 0];
+  const shortest = [99, 99, 99];
   const openLots = [0, 0, 0];
   for (let y = -260; y < 260; y += 2) {
     for (let x = -260; x < 260; x += 2) {
       const d = districtAt(x, y, SEED);
       sampleCity(spec, x, y, SEED, s, info);
-      if (s.storeys > 0) tallest[d] = Math.max(tallest[d], s.storeys);
+      if (s.storeys > 0) {
+        tallest[d] = Math.max(tallest[d], s.storeys);
+        shortest[d] = Math.min(shortest[d], s.storeys);
+      }
       else if (!info.road && !info.walk) openLots[d]++;
     }
   }
   assert.ok(tallest[0] > tallest[1] * 2, `downtown tops out at ${tallest[0]}, suburbs at ${tallest[1]}`);
   assert.ok(tallest[1] > tallest[2], 'residential should build higher than industrial');
+  // And nowhere should be uniformly single-storey: the height curve used to do
+  // nearly all its work at the bottom of the range, so a whole district came
+  // out one floor high and there was no skyline to speak of.
+  assert.ok(shortest[0] >= 2 && shortest[1] >= 2 && shortest[2] >= 2, 'a district builds only single storeys');
   assert.ok(openLots[1] > openLots[0] * 2, 'the suburbs should be the greener district');
 });
 
