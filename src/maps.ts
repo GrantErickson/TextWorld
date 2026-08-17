@@ -41,7 +41,8 @@ const VAULT = `{
   "spawn": { "x": 2.5, "y": 9.5, "angle": 0 },
   "ambient": 0.09,
   "ambientColor": "#3d4f70",
-  "exposure": 2.9,
+  "exposure": 4.6,
+  "contrast": 1.85,
   "fog": { "color": "#0e1420", "density": 0.04 },
   "materials": {
     "brick":  { "color": "#b08a68", "pattern": "brick",  "roughness": 0.8 },
@@ -116,7 +117,8 @@ const COURT = `{
   "spawn": { "x": 5.5, "y": 10.5, "angle": -45 },
   "ambient": 0.12,
   "ambientColor": "#4a67a0",
-  "exposure": 1.9,
+  "exposure": 3.5,
+  "contrast": 1.9,
   "fog": { "color": "#111a2c", "density": 0.03 },
   "sky": { "top": "#060a18", "horizon": "#27395e", "stars": 0.65 },
   "materials": {
@@ -178,9 +180,11 @@ const BARE = `{
     "#########"
   ],
   "spawn": { "x": 1.5, "y": 1.5, "angle": 40 },
-  "ambient": 0.28,
+  "ambient": 0.11,
+  "exposure": 7.0,
+  "contrast": 1.8,
   "lights": [
-    { "x": 6.5, "y": 3.5, "radius": 9, "intensity": 2.2, "flicker": 0.2 }
+    { "x": 6.5, "y": 3.5, "radius": 6.5, "intensity": 2.4, "flicker": 0.2 }
   ]
 }
 `;

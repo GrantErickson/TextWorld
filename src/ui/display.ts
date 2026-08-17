@@ -1,12 +1,17 @@
 import type { CellBuffer } from '../engine/shading.ts';
-import { RAMP } from '../engine/shading.ts';
+import { GLYPHS, GLYPH_SOLID } from '../engine/shading.ts';
 
 const FONT_STACK =
   "'Cascadia Mono', 'Cascadia Code', 'DejaVu Sans Mono', Consolas, 'Courier New', monospace";
 
-/** Tiles in the pre-rendered glyph atlas before it is recycled. */
-const ATLAS_COLS = 48;
-const ATLAS_ROWS = 48;
+/**
+ * Tiles in the pre-rendered glyph atlas before it is recycled. Sized for the
+ * richer glyph modes: the block ramp only ever produces five drawn characters,
+ * but the ASCII and material ramps produce upwards of thirty, and each one
+ * needs its own slot per distinct colour.
+ */
+const ATLAS_COLS = 64;
+const ATLAS_ROWS = 64;
 const ATLAS_CAP = ATLAS_COLS * ATLAS_ROWS;
 
 /**
@@ -169,7 +174,7 @@ export class Display {
 
     this.atlasCtx.clearRect(sx, sy, this.cellW, this.cellH);
     this.atlasCtx.fillStyle = this.css(fg);
-    this.atlasCtx.fillText(RAMP[glyph], sx, sy + this.baseline);
+    this.atlasCtx.fillText(GLYPHS[glyph], sx, sy + this.baseline);
 
     this.atlasMap.set(key, slot);
     return slot;
@@ -193,7 +198,6 @@ export class Display {
     const cw = this.cellW;
     const chh = this.cellH;
     const full = this.forceFull;
-    const solidIndex = RAMP.length - 1;
 
     // Cleared up front, not at the end: recycling the atlas mid-frame sets the
     // flag again to request a clean repaint next time, and that must survive.
@@ -230,7 +234,7 @@ export class Display {
 
         const px = x * cw;
 
-        if (g === solidIndex) {
+        if (GLYPH_SOLID[g]) {
           // The full block is drawn as a rect: exact coverage, no font seams,
           // and it skips the atlas entirely.
           ctx.fillStyle = this.css(fg);
@@ -241,7 +245,7 @@ export class Display {
         ctx.fillStyle = this.css(bg);
         ctx.fillRect(px, py, cw, chh);
 
-        if (g > 0) {
+        if (GLYPHS[g] !== ' ') {
           const slot = this.slotFor(g, fg);
           const sx = (slot % ATLAS_COLS) * cw;
           const sy = Math.floor(slot / ATLAS_COLS) * chh;

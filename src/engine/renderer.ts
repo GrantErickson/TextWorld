@@ -2,18 +2,22 @@ import type { Camera } from './camera.ts';
 import type { World } from './world.ts';
 import type { RayHit } from './raycast.ts';
 import { castRay, makeHit } from './raycast.ts';
-import { applyFog, ensureVisibility, makeAccum, surfaceLight } from './lighting.ts';
+import { applyFog, ensureVisibility, makeAccum, sunLight, surfaceLight } from './lighting.ts';
 import type { LightAccum } from './lighting.ts';
 import { hash2, sampleTexture } from './materials.ts';
 import { DENSITY_CHARS } from './sprites.ts';
 import {
   CellBuffer,
+  GS_SKY,
   KIND_CEILING,
   KIND_DOOR,
   KIND_FLOOR,
   KIND_SKY,
   KIND_SPRITE,
   KIND_WALL,
+  cellSeed,
+  glyphSeed,
+  setContrast,
   toneMap,
 } from './shading.ts';
 
@@ -58,6 +62,12 @@ export class Renderer {
   rayX = new Float32Array(0);
   rayY = new Float32Array(0);
 
+  /**
+   * Global contrast trim, multiplied into every world's own `contrast`. The
+   * map is authored for a look; this is the viewer's knob on top of it.
+   */
+  contrastTrim = 1;
+
   private accum: LightAccum = makeAccum();
   private accTop: LightAccum = makeAccum();
   private accMid: LightAccum = makeAccum();
@@ -94,6 +104,10 @@ export class Renderer {
       this.buf.invalidate();
       cam.teleported = false;
     }
+
+    // Constant for the whole frame, so it is set once here rather than
+    // threaded through every one of the shading call sites below.
+    setContrast(world.contrast * this.contrastTrim);
 
     ensureVisibility(world);
 
@@ -248,6 +262,8 @@ export class Renderer {
           toneMap(acc.r, exposure),
           toneMap(acc.g, exposure),
           toneMap(acc.b, exposure),
+          mat.glyphSlot,
+          glyphSeed(wx, wy),
         );
       }
     }
@@ -288,7 +304,7 @@ export class Renderer {
     }
 
     const e = world.exposure;
-    buf.write(x, y, KIND_SKY, toneMap(r, e), toneMap(g, e), toneMap(b, e));
+    buf.write(x, y, KIND_SKY, toneMap(r, e), toneMap(g, e), toneMap(b, e), GS_SKY);
   }
 
   // ------------------------------------------------------------- pass 3
@@ -367,7 +383,16 @@ export class Renderer {
           b += (fb - b) * fogF;
         }
 
-        buf.write(x, y, kind, toneMap(r, exposure), toneMap(g, exposure), toneMap(b, exposure));
+        buf.write(
+          x,
+          y,
+          kind,
+          toneMap(r, exposure),
+          toneMap(g, exposure),
+          toneMap(b, exposure),
+          mat.glyphSlot,
+          glyphSeed(hit.u, v),
+        );
       }
     }
   }
@@ -473,7 +498,7 @@ export class Renderer {
             const ny = side === 0 ? 0 : -stepY;
             const u = side === 0 ? wy : wx;
             const fogF = world.fogDensity > 0 ? 1 - Math.exp(-dNear * world.fogDensity) : 0;
-            const sun = world.sunIntensity * Math.max(0, nx * world.sunX + ny * world.sunY);
+            const sun = sunLight(world, nx, ny, 0);
 
             for (let y = y0; y <= y1; y++) {
               const zAt = camZ - ((y + 0.5 - horizon) * dNear) / projY;
@@ -487,7 +512,16 @@ export class Renderer {
                 g += (fogG - g) * fogF;
                 b += (fogB - b) * fogF;
               }
-              buf.write(x, y, KIND_WALL, toneMap(r, exposure), toneMap(g, exposure), toneMap(b, exposure));
+              buf.write(
+                x,
+                y,
+                KIND_WALL,
+                toneMap(r, exposure),
+                toneMap(g, exposure),
+                toneMap(b, exposure),
+                mat.glyphSlot,
+                glyphSeed(u, zAt),
+              );
               depth[y * cols + x] = dNear;
             }
             yBuf = y0;
@@ -503,9 +537,13 @@ export class Renderer {
           const y1 = Math.min(yBuf - 1, Math.floor(rowNear - 0.5));
           if (y1 >= y0) {
             const mat = tile.floor;
-            const sun =
-              world.sunIntensity *
-              Math.max(0, tile.nx * world.sunX + tile.ny * world.sunY + tile.nz * world.sunZ);
+            const sun = sunLight(world, tile.nx, tile.ny, tile.nz);
+            // A lake is flat, so the diffuse sun term paints every cell of it
+            // the same colour and it reads as a hole rather than a surface.
+            // The glint is what says "water": a view-dependent highlight, so
+            // it slides across the pool as you walk — the one place in this
+            // renderer where something moving is the correct answer.
+            const glinty = tile.water && world.sunIntensity > 0;
             let painted = false;
             for (let y = y0; y <= y1; y++) {
               const p = y + 0.5 - horizon;
@@ -517,16 +555,45 @@ export class Renderer {
               const wy = cam.y + rdy * d;
               const tex = sampleTexture(mat, wx, wy);
               surfaceLight(world, wx, wy, h, 0, 0, acc);
+
+              let lit = sun;
+              if (glinty) {
+                // Half-vector against a flat-up normal, so only its z matters.
+                const vz = (camZ - h) / d;
+                const inv = 1 / Math.hypot(1, vz);
+                const hx = world.sunX - rdx * inv;
+                const hy = world.sunY - rdy * inv;
+                const hz = world.sunZ + vz * inv;
+                const hl = Math.hypot(hx, hy, hz) || 1;
+                let s = hz / hl;
+                if (s > 0) {
+                  s *= s;
+                  s *= s;
+                  s *= s;
+                  s *= s; // ^16: a tight, bright band rather than a broad sheen
+                  lit += world.sunIntensity * s * 2.6;
+                }
+              }
+
               const fogF = world.fogDensity > 0 ? 1 - Math.exp(-d * world.fogDensity) : 0;
-              let r = (mat.color.r / 255) * ((acc.r + sunR * sun) * tex + mat.emissive);
-              let g = (mat.color.g / 255) * ((acc.g + sunG * sun) * tex + mat.emissive);
-              let b = (mat.color.b / 255) * ((acc.b + sunB * sun) * tex + mat.emissive);
+              let r = (mat.color.r / 255) * ((acc.r + sunR * lit) * tex + mat.emissive);
+              let g = (mat.color.g / 255) * ((acc.g + sunG * lit) * tex + mat.emissive);
+              let b = (mat.color.b / 255) * ((acc.b + sunB * lit) * tex + mat.emissive);
               if (fogF > 0) {
                 r += (fogR - r) * fogF;
                 g += (fogG - g) * fogF;
                 b += (fogB - b) * fogF;
               }
-              buf.write(x, y, KIND_FLOOR, toneMap(r, exposure), toneMap(g, exposure), toneMap(b, exposure));
+              buf.write(
+                x,
+                y,
+                KIND_FLOOR,
+                toneMap(r, exposure),
+                toneMap(g, exposure),
+                toneMap(b, exposure),
+                mat.glyphSlot,
+                glyphSeed(wx, wy),
+              );
               depth[y * cols + x] = d;
               painted = true;
             }
@@ -620,9 +687,10 @@ export class Renderer {
       // Outdoors the sun does nearly all the lighting, and a sprite that only
       // collects ambient reads as a black cut-out against a sunlit hillside.
       // A billboard has no real normal to shade with, so it takes a flat share
-      // of the sun — enough to sit in the same light as the ground it is on.
+      // of the sun — matched to what level ground collects, so lowering the sun
+      // dims the trees along with the fields rather than leaving them glowing.
       if (world.sunIntensity > 0) {
-        const s = world.sunIntensity * 0.62;
+        const s = sunLight(world, 0, 0, 1) * 0.85;
         acc.r += (world.sunColor.r / 255) * s;
         acc.g += (world.sunColor.g / 255) * s;
         acc.b += (world.sunColor.b / 255) * s;
@@ -686,6 +754,11 @@ export class Renderer {
             toneMap(r, exposure),
             toneMap(g, exposure),
             toneMap(b, exposure),
+            def.glyphSlot,
+            // Welded to the art cell, so a sprite's texture is perfectly still
+            // however it moves on screen. Offset by the entity so two trees
+            // side by side are not the same tree twice.
+            cellSeed(au + e.index * 13, av),
           );
           touched = true;
         }

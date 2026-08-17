@@ -11,6 +11,8 @@ import './style.css';
 import { Camera } from './engine/camera.ts';
 import { MapError, parseMapSource } from './engine/mapFormat.ts';
 import { Renderer } from './engine/renderer.ts';
+import type { GlyphMode } from './engine/shading.ts';
+import { GLYPH_MODES, setGlyphMode } from './engine/shading.ts';
 import { World } from './engine/world.ts';
 import { Display } from './ui/display.ts';
 import { Input } from './ui/input.ts';
@@ -19,6 +21,8 @@ import { PRESETS, presetById } from './maps.ts';
 
 const STORAGE_SOURCE = 'textworld.source';
 const STORAGE_PRESET = 'textworld.preset';
+const STORAGE_GLYPHS = 'textworld.glyphs';
+const STORAGE_CONTRAST = 'textworld.contrast';
 
 /** Debounce on the editor: long enough to finish a word, short enough to feel live. */
 const EDIT_DELAY = 400;
@@ -43,6 +47,9 @@ const presetSel = must<HTMLSelectElement>('presetSel');
 const revertBtn = must<HTMLButtonElement>('revertBtn');
 const fontSizeEl = must<HTMLInputElement>('fontSize');
 const fontSizeOut = must<HTMLOutputElement>('fontSizeOut');
+const glyphModeEl = must<HTMLSelectElement>('glyphMode');
+const contrastEl = must<HTMLInputElement>('contrast');
+const contrastOut = must<HTMLOutputElement>('contrastOut');
 const showRaysEl = must<HTMLInputElement>('showRays');
 const invertYEl = must<HTMLInputElement>('invertY');
 const pauseBtn = must<HTMLButtonElement>('pauseBtn');
@@ -192,6 +199,24 @@ for (const p of PRESETS) {
   }
 }
 
+// Restore the viewer's own display preferences. These sit on top of whatever
+// the map asks for rather than replacing it: `contrast` here is a trim applied
+// over the map's own value, so a well-tuned map still looks like itself.
+{
+  let mode: GlyphMode = 'blocks';
+  let trim = 1;
+  try {
+    const saved = localStorage.getItem(STORAGE_GLYPHS) as GlyphMode | null;
+    if (saved && GLYPH_MODES.includes(saved)) mode = saved;
+    const savedTrim = Number(localStorage.getItem(STORAGE_CONTRAST));
+    if (Number.isFinite(savedTrim) && savedTrim > 0) trim = savedTrim;
+  } catch {
+    // No storage available; the defaults are fine.
+  }
+  setGlyphs(mode);
+  setContrastTrim(trim);
+}
+
 display.setFontSize(Number(fontSizeEl.value));
 fontSizeOut.value = fontSizeEl.value;
 relayout();
@@ -211,6 +236,10 @@ fontSizeEl.addEventListener('input', () => {
   fontSizeOut.value = fontSizeEl.value;
   setFontSize(Number(fontSizeEl.value));
 });
+
+glyphModeEl.addEventListener('change', () => setGlyphs(glyphModeEl.value as GlyphMode));
+
+contrastEl.addEventListener('input', () => setContrastTrim(Number(contrastEl.value)));
 
 showRaysEl.addEventListener('change', () => {
   showRays = showRaysEl.checked;
@@ -243,6 +272,37 @@ function setFontSize(px: number): void {
   fontSizeEl.value = String(clamped);
   fontSizeOut.value = String(clamped);
   relayout();
+}
+
+/**
+ * Swap the glyph ramp. The cell buffer's hysteresis remembers a *glyph*, not a
+ * brightness, so without dropping that history every cell inside its dead band
+ * would keep drawing the old ramp's character until the light happened to move.
+ */
+function setGlyphs(mode: GlyphMode): void {
+  setGlyphMode(mode);
+  glyphModeEl.value = mode;
+  camera.teleported = true;
+  display.invalidate();
+  needsRedraw = true;
+  try {
+    localStorage.setItem(STORAGE_GLYPHS, mode);
+  } catch {
+    // Persistence is a convenience only.
+  }
+}
+
+function setContrastTrim(value: number): void {
+  const clamped = Math.max(0.6, Math.min(1.6, value));
+  renderer.contrastTrim = clamped;
+  contrastEl.value = String(clamped);
+  contrastOut.value = clamped.toFixed(2);
+  needsRedraw = true;
+  try {
+    localStorage.setItem(STORAGE_CONTRAST, String(clamped));
+  } catch {
+    // See above.
+  }
 }
 
 function setPaused(next: boolean): void {
@@ -290,6 +350,10 @@ function frame(now: number): void {
   if (input.wasTapped('KeyF')) {
     camera.flying = !camera.flying;
     camera.vz = 0;
+  }
+  if (input.wasTapped('KeyG')) {
+    const next = (GLYPH_MODES.indexOf(glyphModeEl.value as GlyphMode) + 1) % GLYPH_MODES.length;
+    setGlyphs(GLYPH_MODES[next]);
   }
   if (input.wasTapped('BracketLeft')) setFontSize(display.getFontSize() - 1);
   if (input.wasTapped('BracketRight')) setFontSize(display.getFontSize() + 1);
@@ -343,11 +407,19 @@ function updateStats(): void {
   stats.set('lights', String(world.lights.length));
   stats.set('position', `${camera.x.toFixed(2)}, ${camera.y.toFixed(2)}`);
   stats.set('heading', `${heading.toFixed(0)}°`);
-  stats.set(
-    'altitude',
-    camera.flying ? `${camera.z.toFixed(2)} · flying` : `${camera.z.toFixed(2)}`,
-    camera.flying ? 'good' : '',
-  );
+  const stance = camera.flying
+    ? 'flying'
+    : camera.swimming
+      ? 'swimming'
+      : camera.wading
+        ? 'wading'
+        : camera.grounded
+          ? 'walking'
+          : 'falling';
+  stats.set('altitude', `${camera.z.toFixed(2)} · ${stance}`, camera.flying || camera.swimming ? 'good' : '');
+  const depth = world.waterDepthAt(camera.x, camera.y);
+  stats.set('water', depth > 0 ? `${depth.toFixed(2)} deep` : '—');
+  stats.set('exposure', `${world.exposure.toFixed(1)} · ×${world.contrast.toFixed(2)} contrast`);
 
   if (world.infinite) {
     const g = world.gen;

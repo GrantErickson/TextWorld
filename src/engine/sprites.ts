@@ -1,5 +1,6 @@
 import type { SpriteDef } from './types.ts';
 import { rgb } from './materials.ts';
+import { slotForPattern } from './shading.ts';
 
 /**
  * Sprite art is a density bitmap rather than a glyph bitmap. Each character
@@ -29,8 +30,18 @@ function def(
   base: number,
   art: string[],
   emissive = 0,
+  glyphs = 'solid',
 ): SpriteDef {
-  return { id, color: rgb(color[0], color[1], color[2]), width, height, base, art, emissive };
+  return {
+    id,
+    color: rgb(color[0], color[1], color[2]),
+    width,
+    height,
+    base,
+    art,
+    emissive,
+    glyphSlot: slotForPattern(glyphs),
+  };
 }
 
 export const SPRITES: Record<string, SpriteDef> = {
@@ -47,7 +58,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     ' :####: ',
     '########',
     '########',
-  ]),
+  ], 0, 'rock'),
 
   crate: def('crate', [156, 112, 62], 0.6, 0.6, 0, [
     '########',
@@ -58,7 +69,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     '#+*##*+#',
     '#:+**+:#',
     '########',
-  ]),
+  ], 0, 'planks'),
 
   barrel: def('barrel', [122, 98, 70], 0.52, 0.72, 0, [
     ' :####: ',
@@ -70,7 +81,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     '#:****:#',
     '########',
     ' :####: ',
-  ]),
+  ], 0, 'planks'),
 
   brazier: def(
     'brazier',
@@ -105,7 +116,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     '  ###   ',
     ' :###:  ',
     '#######*',
-  ]),
+  ], 0, 'foliage'),
 
   drone: def(
     'drone',
@@ -124,6 +135,7 @@ export const SPRITES: Record<string, SpriteDef> = {
       '   ..   ',
     ],
     0.5,
+    'panel',
   ),
 
   // ------------------------------------------------------------- outdoors
@@ -144,7 +156,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     '    ##    ',
     '   .##.   ',
     '   ####   ',
-  ]),
+  ], 0, 'foliage'),
 
   pine: def('pine', [72, 118, 82], 1.7, 4.0, 0, [
     '    ##    ',
@@ -161,7 +173,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     '   .##.   ',
     '    ##    ',
     '   ####   ',
-  ]),
+  ], 0, 'foliage'),
 
   shrub: def('shrub', [110, 138, 78], 1.0, 0.7, 0, [
     ' .:##:. ',
@@ -171,7 +183,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     '.######.',
     ' :####: ',
     '  :##:  ',
-  ]),
+  ], 0, 'foliage'),
 
   reeds: def('reeds', [138, 148, 92], 1.0, 1.2, 0, [
     '. .  . .',
@@ -181,7 +193,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     '#.##.#.#',
     '#####.##',
     '########',
-  ]),
+  ], 0, 'foliage'),
 
   boulder: def('boulder', [142, 138, 128], 1.3, 0.9, 0, [
     '  .:##:.  ',
@@ -191,7 +203,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     '##########',
     '##########',
     '.########.',
-  ]),
+  ], 0, 'rock'),
 
   monolith: def('monolith', [58, 62, 74], 0.5, 1.4, 0, [
     '  ****  ',
@@ -204,7 +216,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     ' ###### ',
     ' ###### ',
     '########',
-  ]),
+  ], 0, 'rock'),
 };
 
 export function lookupSprite(id: string | undefined): SpriteDef | null {

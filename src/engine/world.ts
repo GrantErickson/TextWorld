@@ -96,10 +96,18 @@ export class World {
    * Tone-mapping exposure. This wants to be well above 1: the curve is
    * `x / (1 + x)`, so at exposure 1 even a white surface under a full-strength
    * light only reaches 0.5 and the top half of the glyph ramp is unreachable
-   * by construction. Around 2.2 a lit wall lands mid-ramp, which is where the
-   * glyphs read as surface texture rather than as scattered dots.
+   * by construction. With `contrast` pulling the other way, a torch-lit
+   * interior wants somewhere around 4-6.
    */
-  exposure = 2.2;
+  exposure = 3.4;
+  /**
+   * Spread of the tone curve, applied after exposure. 1 leaves the curve as it
+   * was; above 1 deepens shadow and lifts highlight. See `setContrast`.
+   *
+   * Exposure and contrast pull against each other on purpose: exposure slides
+   * the whole distribution, contrast widens it. A map is tuned with both.
+   */
+  contrast = 1.8;
   skyTop: RGB = rgb(14, 22, 42);
   skyHorizon: RGB = rgb(58, 78, 112);
   starDensity = 0.5;
@@ -221,11 +229,31 @@ export class World {
     return true;
   }
 
-  /** Elevation of the ground under a world position. Always 0 indoors. */
+  /**
+   * Elevation of the visible surface under a world position — the top of the
+   * water where there is water. Always 0 indoors.
+   */
   groundAt(x: number, y: number): number {
     if (!this.terrain) return 0;
     const t = this.tileAt(Math.floor(x), Math.floor(y));
     return t ? t.height : 0;
+  }
+
+  /**
+   * Elevation of the solid ground, under any water. This is what the legs
+   * stand on: `groundAt` would have you walking on the surface of a lake.
+   */
+  bedAt(x: number, y: number): number {
+    if (!this.terrain) return 0;
+    const t = this.tileAt(Math.floor(x), Math.floor(y));
+    return t ? t.bed : 0;
+  }
+
+  /** Depth of standing water over a spot; 0 on dry land and indoors. */
+  waterDepthAt(x: number, y: number): number {
+    if (!this.terrain) return 0;
+    const t = this.tileAt(Math.floor(x), Math.floor(y));
+    return t && t.water ? t.depth : 0;
   }
 
   /**
@@ -253,7 +281,12 @@ export class World {
     // Only *upward* steps are refused. Blocking the way down as well was a
     // mistake — it let you walk into a hollow you could then never leave, and
     // a drop is not an obstacle, it is a fall.
-    const base = feetZ ?? this.groundAt(fromX, fromY);
+    //
+    // The obstacle is the *bed*, never the water surface, and swimming needs
+    // no case of its own because of it: afloat, your feet sit near the surface,
+    // so a deep bed is far below them and poses no step at all — while a cliff
+    // rising out of the lake still stops you exactly as it does on dry land.
+    const base = feetZ ?? this.bedAt(fromX, fromY);
     const minX = Math.floor(toX - radius);
     const maxX = Math.floor(toX + radius);
     const minY = Math.floor(toY - radius);
@@ -268,7 +301,7 @@ export class World {
         const dx = toX - cx;
         const dy = toY - cy;
         if (dx * dx + dy * dy >= radius * radius) continue;
-        if (t.height - base > STEP_HEIGHT) return false;
+        if (t.bed - base > STEP_HEIGHT) return false;
       }
     }
     return true;
@@ -408,6 +441,7 @@ export class World {
       if (src.ambient !== undefined) world.ambient = src.ambient;
       if (src.ambientColor !== undefined) world.ambientColor = parseColor(src.ambientColor, world.ambientColor);
       if (src.exposure !== undefined) world.exposure = src.exposure;
+      if (src.contrast !== undefined) world.contrast = src.contrast;
       if (src.fog?.color !== undefined) world.fogColor = parseColor(src.fog.color, world.fogColor);
       if (src.fog?.density !== undefined) world.fogDensity = src.fog.density;
       if (src.sky?.top !== undefined) world.skyTop = parseColor(src.sky.top, world.skyTop);
@@ -432,6 +466,7 @@ export class World {
     world.fogColor = parseColor(src.fog?.color, world.fogColor);
     if (src.fog?.density !== undefined) world.fogDensity = src.fog.density;
     if (src.exposure !== undefined) world.exposure = src.exposure;
+    if (src.contrast !== undefined) world.contrast = src.contrast;
     world.skyTop = parseColor(src.sky?.top, world.skyTop);
     world.skyHorizon = parseColor(src.sky?.horizon, world.skyHorizon);
     if (src.sky?.stars !== undefined) world.starDensity = src.sky.stars;
@@ -461,6 +496,8 @@ export class World {
             doorId: -1,
             ao: 1,
             height: 0,
+            bed: 0,
+            depth: 0,
             nx: 0,
             ny: 0,
             nz: 1,
@@ -479,6 +516,8 @@ export class World {
             doorId: -1,
             ao: 1,
             height: 0,
+            bed: 0,
+            depth: 0,
             nx: 0,
             ny: 0,
             nz: 1,
@@ -497,6 +536,8 @@ export class World {
             doorId: -1,
             ao: 1,
             height: 0,
+            bed: 0,
+            depth: 0,
             nx: 0,
             ny: 0,
             nz: 1,
@@ -518,6 +559,8 @@ export class World {
             doorId: -1,
             ao: 1,
             height: 0,
+            bed: 0,
+            depth: 0,
             nx: 0,
             ny: 0,
             nz: 1,
@@ -656,6 +699,7 @@ export class World {
     world.ambient = spec.ambient;
     world.ambientColor = parseColor(spec.ambientColor, world.ambientColor);
     world.exposure = spec.exposure;
+    world.contrast = spec.contrast;
     world.fogColor = parseColor(spec.fogColor, world.fogColor);
     world.fogDensity = spec.fogDensity;
     world.skyTop = parseColor(spec.skyTop, world.skyTop);
@@ -707,6 +751,8 @@ export class World {
           doorId: -1,
           ao: 1,
           height: s.height,
+          bed: s.bed,
+          depth: s.depth,
           nx: 0,
           ny: 0,
           nz: 1,
@@ -856,6 +902,7 @@ export class World {
     world.ambient = theme.ambient;
     world.ambientColor = parseColor(theme.ambientColor, world.ambientColor);
     world.exposure = theme.exposure;
+    world.contrast = theme.contrast;
     world.fogColor = parseColor(theme.fogColor, world.fogColor);
     world.fogDensity = theme.fogDensity;
     if (theme.skyTop) world.skyTop = parseColor(theme.skyTop, world.skyTop);
@@ -1299,6 +1346,8 @@ export class World {
         doorId: -1,
         ao: 1,
         height: 0,
+        bed: 0,
+        depth: 0,
         nx: 0,
         ny: 0,
         nz: 1,

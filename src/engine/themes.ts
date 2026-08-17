@@ -64,6 +64,8 @@ export interface Theme {
   ambient: number;
   ambientColor: string;
   exposure: number;
+  /** Spread of the tone curve; see `setContrast` in shading.ts. */
+  contrast: number;
   fogColor: string;
   fogDensity: number;
   skyTop?: string;
@@ -111,7 +113,8 @@ const CATACOMBS: Theme = {
   },
   ambient: 0.09,
   ambientColor: '#3d4f70',
-  exposure: 2.9,
+  exposure: 4.2,
+  contrast: 1.9,
   fogColor: '#0e1420',
   fogDensity: 0.05,
   // Spread out and kept short: overlapping pools wash the whole place out,
@@ -164,7 +167,8 @@ const CAVERNS: Theme = {
   },
   ambient: 0.1,
   ambientColor: '#46608e',
-  exposure: 2.7,
+  exposure: 2.2,
+  contrast: 2.0,
   fogColor: '#0c111c',
   fogDensity: 0.055,
   skyTop: '#050912',
@@ -216,7 +220,8 @@ const STATION: Theme = {
   },
   ambient: 0.12,
   ambientColor: '#4a6a94',
-  exposure: 2.6,
+  exposure: 1.5,
+  contrast: 1.9,
   fogColor: '#0d1520',
   fogDensity: 0.045,
   // A station reads as evenly lit, so its lamps sit closer together than the

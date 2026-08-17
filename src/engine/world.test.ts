@@ -224,8 +224,8 @@ test('walking away and back gives the same land', () => {
 test('the camera rides the ground and cannot walk through a building', () => {
   const world = World.fromTerrain(TERRAIN_THEMES.wilds, 2024);
   const cam = new Camera();
-  cam.placeAt(world.spawnX, world.spawnY, 0, world.groundAt(world.spawnX, world.spawnY));
-  assert.ok(Math.abs(cam.z - (world.groundAt(cam.x, cam.y) + 0.5)) < 1e-9);
+  cam.placeAt(world.spawnX, world.spawnY, 0, world.bedAt(world.spawnX, world.spawnY));
+  assert.ok(Math.abs(cam.z - (world.bedAt(cam.x, cam.y) + 0.5)) < 1e-9);
 
   const input = { forward: 1, strafe: 0, turn: 0, mouseDX: 0, mouseDY: 0, run: false, jump: false, lift: 0 };
   for (let i = 0; i < 600; i++) {
@@ -236,8 +236,10 @@ test('the camera rides the ground and cannot walk through a building', () => {
     assert.ok(tile, 'camera left the window');
     assert.equal(tile!.type, TILE_EMPTY, `camera entered solid geometry at frame ${i}`);
   }
-  // The eye must have settled onto whatever it ended up standing on.
-  assert.ok(Math.abs(cam.z - (world.groundAt(cam.x, cam.y) + 0.5)) < 0.5);
+  // The eye must have settled onto whatever it ended up standing on — or be
+  // floating on whatever it ended up in.
+  const restingOn = cam.swimming ? world.groundAt(cam.x, cam.y) : world.bedAt(cam.x, cam.y);
+  assert.ok(Math.abs(cam.z - (restingOn + 0.5)) < 0.5);
 });
 
 const idle = { forward: 0, strafe: 0, turn: 0, mouseDX: 0, mouseDY: 0, run: false, jump: false, lift: 0 };
@@ -273,7 +275,8 @@ test('flying climbs, and will not sink through the ground', () => {
   assert.ok(cam.z > rest + 3, `expected to gain height, got ${(cam.z - rest).toFixed(2)}`);
 
   for (let i = 0; i < 600; i++) cam.update(1 / 60, { ...idle, lift: -1 }, world, 40);
-  assert.ok(cam.z >= world.groundAt(cam.x, cam.y) + 0.49, 'flight must not drop through the floor');
+  // The bed, not the surface: flying down into a lake should reach its floor.
+  assert.ok(cam.z >= world.bedAt(cam.x, cam.y) + 0.49, 'flight must not drop through the floor');
 
   // And switching it off drops you back to the ground rather than leaving you
   // hovering.
@@ -281,7 +284,8 @@ test('flying climbs, and will not sink through the ground', () => {
   for (let i = 0; i < 60; i++) cam.update(1 / 60, { ...idle, lift: 1 }, world, 40);
   cam.flying = false;
   for (let i = 0; i < 300; i++) cam.update(1 / 60, idle, world, 40);
-  assert.ok(Math.abs(cam.z - (world.groundAt(cam.x, cam.y) + 0.5)) < 0.05, 'should have fallen back to the ground');
+  const landed = cam.swimming ? world.groundAt(cam.x, cam.y) : world.bedAt(cam.x, cam.y);
+  assert.ok(Math.abs(cam.z - (landed + 0.5)) < 0.5, 'should have come back down');
 });
 
 test('indoors the eye stays inside the room', () => {
@@ -299,4 +303,114 @@ test('indoors the eye stays inside the room', () => {
     cam.update(1 / 60, { ...idle, lift: 1 }, world, 40);
     assert.ok(cam.z < 0.9, `flying left the room at z=${cam.z.toFixed(3)}`);
   }
+});
+
+// ------------------------------------------------------------------- water
+
+/** The deepest water tile in the window, or null if the world is dry. */
+function deepestWater(world: World): { x: number; y: number; depth: number; surface: number } | null {
+  let best: { x: number; y: number; depth: number; surface: number } | null = null;
+  for (let y = 0; y < world.height; y++) {
+    for (let x = 0; x < world.width; x++) {
+      const t = world.tiles[y * world.width + x];
+      if (!t.water) continue;
+      if (!best || t.depth > best.depth) {
+        best = { x: world.originX + x + 0.5, y: world.originY + y + 0.5, depth: t.depth, surface: t.height };
+      }
+    }
+  }
+  return best;
+}
+
+test('deep water floats the camera at the surface instead of on the bed', () => {
+  // The bed/surface split only pays off if movement reads the bed and the eye
+  // rides the surface. Get that backwards and you either walk on top of a lake
+  // or drown on its floor, both of which look like renderer bugs.
+  for (const theme of Object.values(TERRAIN_THEMES)) {
+    const world = World.fromTerrain(theme, 2024);
+    const spot = deepestWater(world);
+    assert.ok(spot, `theme "${theme.id}" produced no water in its first window`);
+    assert.ok(spot!.depth > 1, `deepest water is only ${spot!.depth.toFixed(2)} tiles`);
+
+    const cam = new Camera();
+    cam.placeAt(spot!.x, spot!.y, 0, world.bedAt(spot!.x, spot!.y));
+    for (let i = 0; i < 180; i++) cam.update(1 / 60, idle, world, 40);
+
+    assert.equal(cam.swimming, true, `${theme.id}: should be swimming in ${spot!.depth.toFixed(1)} tiles of water`);
+    assert.ok(
+      cam.z > spot!.surface && cam.z < spot!.surface + 0.4,
+      `${theme.id}: eye at ${cam.z.toFixed(2)} should sit just above the surface at ${spot!.surface.toFixed(2)}`,
+    );
+    assert.ok(
+      cam.z > world.bedAt(cam.x, cam.y) + 1,
+      `${theme.id}: the eye sank toward the bed instead of floating`,
+    );
+  }
+});
+
+test('falling into a lake floats rather than dropping to the bed', () => {
+  const world = World.fromTerrain(TERRAIN_THEMES.wilds, 2024);
+  const spot = deepestWater(world)!;
+  const cam = new Camera();
+  // Well above the water: being *over* deep water must not float you in mid-air.
+  cam.placeAt(spot.x, spot.y, 0, spot.surface + 6);
+  assert.equal(cam.swimming, false);
+  cam.update(1 / 60, idle, world, 40);
+  assert.equal(cam.swimming, false, 'floating started before reaching the water');
+
+  let lowest = cam.z;
+  for (let i = 0; i < 300; i++) {
+    cam.update(1 / 60, idle, world, 40);
+    lowest = Math.min(lowest, cam.z);
+  }
+  assert.equal(cam.swimming, true, 'should be afloat after landing in the lake');
+  assert.ok(lowest > world.bedAt(cam.x, cam.y) + 0.5, `sank to ${lowest.toFixed(2)} before floating`);
+});
+
+test('swimming never leaves the camera inside the ground', () => {
+  // Swimming is the one movement state where the feet are not on anything, so
+  // it is the one most likely to walk the body into a bank or a building.
+  const world = World.fromTerrain(TERRAIN_THEMES.wilds, 2024);
+  const spot = deepestWater(world)!;
+  const cam = new Camera();
+  cam.placeAt(spot.x, spot.y, 0, world.bedAt(spot.x, spot.y));
+
+  const input = { ...idle, forward: 1 };
+  for (let i = 0; i < 1200; i++) {
+    input.turn = i % 97 === 0 ? 1 : 0;
+    cam.update(1 / 60, input, world, 40);
+    world.update(1 / 60, cam.x, cam.y);
+    const tile = world.tileAt(Math.floor(cam.x), Math.floor(cam.y));
+    assert.ok(tile, 'camera left the window');
+    assert.equal(tile!.type, TILE_EMPTY, `camera entered solid geometry at frame ${i}`);
+    // The eye is either above the water it is in, or above the ground it is on.
+    assert.ok(cam.z >= tile!.bed - 1e-6, `eye at ${cam.z.toFixed(2)} sank below the bed at frame ${i}`);
+  }
+});
+
+test('a bank too tall to climb still stops a swimmer', () => {
+  // Floating raises the feet, which is what lets you climb out onto a shore.
+  // It must not let you climb out onto a cliff.
+  const world = World.fromTerrain(TERRAIN_THEMES.wilds, 2024);
+  const spot = deepestWater(world)!;
+  const feet = spot.surface - 0.34; // roughly where a swimmer's feet sit
+
+  let checkedShore = false;
+  let checkedCliff = false;
+  for (let y = 0; y < world.height && !(checkedShore && checkedCliff); y++) {
+    for (let x = 0; x < world.width; x++) {
+      const t = world.tiles[y * world.width + x];
+      const wx = world.originX + x + 0.5;
+      const wy = world.originY + y + 0.5;
+      const rise = t.bed - feet;
+      if (rise > 1.2 && !checkedCliff) {
+        assert.equal(world.canStep(spot.x, spot.y, wx, wy, 0.24, feet), false, 'a cliff must still block');
+        checkedCliff = true;
+      } else if (rise > -0.2 && rise < 0.2 && !checkedShore) {
+        assert.equal(world.canStep(spot.x, spot.y, wx, wy, 0.24, feet), true, 'a shore at the waterline must be climbable');
+        checkedShore = true;
+      }
+    }
+  }
+  assert.ok(checkedCliff && checkedShore, 'expected both a shore and a cliff to test against');
 });

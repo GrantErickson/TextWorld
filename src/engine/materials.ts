@@ -1,4 +1,5 @@
 import type { Material, PatternId, RGB } from './types.ts';
+import { slotForPattern } from './shading.ts';
 
 /**
  * Texels per world tile. Texture coordinates are snapped to this lattice
@@ -42,6 +43,7 @@ const PATTERNS: readonly PatternId[] = [
   'grate',
   'tile',
   'planks',
+  'water',
 ];
 
 export function parsePattern(input: string | undefined): PatternId {
@@ -50,7 +52,7 @@ export function parsePattern(input: string | undefined): PatternId {
 }
 
 export function makeMaterial(id: string, color: RGB, pattern: PatternId, roughness = 0.6, emissive = 0): Material {
-  return { id, color, pattern, roughness, emissive };
+  return { id, color, pattern, roughness, emissive, glyphSlot: slotForPattern(pattern) };
 }
 
 export const DEFAULT_WALL = makeMaterial('default-wall', rgb(140, 146, 156), 'rock', 0.6);
@@ -87,19 +89,24 @@ export function sampleTexture(m: Material, u: number, v: number): number {
   const iv = Math.floor(v * TEXELS_PER_TILE);
   let t = 1;
 
+  // The deviations below are wide on purpose. They used to sit around +-15%,
+  // which sounds like plenty and is not: after roughness scales it and the
+  // tone curve compresses it, a whole wall of it stayed inside a single ramp
+  // step and rendered as one flat character. A pattern has to move the value
+  // across a step boundary or it may as well not exist.
   switch (m.pattern) {
     case 'solid':
-      t = 1 + (hash2(iu, iv) - 0.5) * 0.06;
+      t = 1 + (hash2(iu, iv) - 0.5) * 0.12;
       break;
 
     case 'noise':
-      t = 0.86 + fbm(iu, iv) * 0.3;
+      t = 0.72 + fbm(iu, iv) * 0.58;
       break;
 
     case 'rock': {
       const n = fbm(iu, iv);
-      const crack = fbm(iu >> 1, (iv * 3) >> 1) > 0.82 ? 0.62 : 1;
-      t = (0.8 + n * 0.38) * crack;
+      const crack = fbm(iu >> 1, (iv * 3) >> 1) > 0.8 ? 0.48 : 1;
+      t = (0.66 + n * 0.64) * crack;
       break;
     }
 
@@ -110,7 +117,7 @@ export function sampleTexture(m: Material, u: number, v: number): number {
       const bx = (((iu + offset) % 6) + 6) % 6;
       const by = (((iv % 3) + 3) % 3);
       const mortar = bx === 0 || by === 0;
-      t = mortar ? 0.5 : 0.92 + hash2(course, Math.floor((iu + offset) / 6)) * 0.28;
+      t = mortar ? 0.42 : 0.86 + hash2(course, Math.floor((iu + offset) / 6)) * 0.42;
       break;
     }
 
@@ -118,27 +125,36 @@ export function sampleTexture(m: Material, u: number, v: number): number {
       const seamV = (((iu % 8) + 8) % 8) === 0;
       const seamH = (((iv % 14) + 14) % 14) === 0;
       const rivet = (((iu % 8) + 8) % 8) === 4 && (((iv % 14) + 14) % 14) === 7;
-      t = seamV || seamH ? 0.52 : rivet ? 1.22 : 0.97 + hash2(iu >> 3, iv >> 3) * 0.1;
+      t = seamV || seamH ? 0.44 : rivet ? 1.32 : 0.93 + hash2(iu >> 3, iv >> 3) * 0.2;
       break;
     }
 
     case 'grate': {
       const bx = ((iu % 3) + 3) % 3;
       const by = ((iv % 3) + 3) % 3;
-      t = bx !== 0 && by !== 0 ? 0.18 : 1.12;
+      t = bx !== 0 && by !== 0 ? 0.14 : 1.2;
       break;
     }
 
     case 'tile': {
       const grout = (((iu % 6) + 6) % 6) === 0 || (((iv % 6) + 6) % 6) === 0;
       const checker = ((Math.floor(iu / 6) + Math.floor(iv / 6)) & 1) === 1;
-      t = grout ? 0.55 : checker ? 0.88 : 1.06;
+      t = grout ? 0.45 : checker ? 0.82 : 1.14;
       break;
     }
 
     case 'planks': {
       const seam = (((iv % 4) + 4) % 4) === 0;
-      t = seam ? 0.55 : 0.9 + hash2(iu, Math.floor(iv / 4)) * 0.22;
+      t = seam ? 0.46 : 0.84 + hash2(iu, Math.floor(iv / 4)) * 0.4;
+      break;
+    }
+
+    case 'water': {
+      // Long shallow ripples: banded across v, wandering along u. Static, like
+      // every other pattern here — a surface that animates is a surface that
+      // never settles, and the sun glint in the renderer supplies the life.
+      const band = Math.sin(iv * 0.62 + hash2(iu >> 2, 0) * 6.28) * 0.5 + 0.5;
+      t = 0.82 + band * 0.3 + hash2(iu, iv >> 1) * 0.08;
       break;
     }
   }

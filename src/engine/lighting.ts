@@ -213,6 +213,31 @@ export function surfaceLight(
   }
 }
 
+/**
+ * How far past perpendicular a surface still catches sun.
+ *
+ * The same wrap-around idea the point lights use, but shifted rather than
+ * floored, which matters here. The sun sits low so that slopes shade
+ * differently from one another, and pure Lambert against a low sun draws a
+ * knife-edge terminator across every hill — at character resolution that reads
+ * as a tear in the image rather than as the far side of a slope. Shifting the
+ * zero crossing spreads the terminator over several tiles of slope instead.
+ *
+ * A floor (`w + (1-w)*max(0,dot)`) was tried first and is worse: it lifts every
+ * back-facing surface by the same amount, so shadow becomes a flat grey wash
+ * and the frame loses the range the low sun was there to create. Entropy over
+ * the built-in outdoor maps fell from 2.0 to 1.4 on that version alone.
+ */
+const SUN_WRAP = 0.35;
+
+/** Directional sun on a surface with the given normal. */
+export function sunLight(world: World, nx: number, ny: number, nz: number): number {
+  if (world.sunIntensity <= 0) return 0;
+  const dot = nx * world.sunX + ny * world.sunY + nz * world.sunZ;
+  const w = (dot + SUN_WRAP) / (1 + SUN_WRAP);
+  return w > 0 ? world.sunIntensity * w : 0;
+}
+
 /** Blend a linear colour in `c` toward the fog colour by distance, in place. */
 export function applyFog(world: World, dist: number, c: LightAccum): void {
   if (world.fogDensity <= 0) return;

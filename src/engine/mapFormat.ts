@@ -65,6 +65,12 @@ export interface MapSource {
   sky?: { top?: string; horizon?: string; stars?: number };
   /** Tone-mapping exposure; higher is brighter overall. */
   exposure?: number;
+  /**
+   * Spread of the tone curve, applied after exposure. 1 is the plain curve;
+   * above 1 deepens shadow and lifts highlight. Interiors want roughly
+   * 1.4–1.8. Raise `exposure` alongside it — they pull opposite ways.
+   */
+  contrast?: number;
   materials?: Record<string, MapSourceMaterial>;
   legend?: Record<string, MapSourceLegend>;
   lights?: MapSourceLight[];
@@ -159,6 +165,9 @@ function applyCommon(src: Record<string, unknown>, out: MapSource): void {
   if (typeof src.ambient === 'number') out.ambient = clamp01(src.ambient as number);
   if (typeof src.ambientColor === 'string') out.ambientColor = src.ambientColor as string;
   if (typeof src.exposure === 'number') out.exposure = Math.max(0.05, src.exposure as number);
+  if (typeof src.contrast === 'number') {
+    out.contrast = Math.max(0.2, Math.min(6, src.contrast as number));
+  }
 
   if (src.fog !== undefined) {
     const f = src.fog as Record<string, unknown>;

@@ -33,7 +33,8 @@ matter:
 - **Glyphs have hysteresis.** A cell keeps its current glyph until the
   underlying brightness moves past a dead band (`HYSTERESIS`). Without this, a
   cell sitting near a ramp threshold flips between two characters every frame
-  on floating-point noise alone.
+  on floating-point noise alone. The band holds the *character*, not the ramp
+  level, which is what also keeps the material sets' variant glyphs still.
 - **No head bob, ever.** `camera.ts` deliberately omits bob and view sway. Both
   are cheap ways to make a renderer feel alive and both are poison here: they
   add continuous sub-cell motion that no amount of hysteresis can settle.
@@ -48,12 +49,55 @@ The naive approach — map brightness to a glyph on a luminance ramp — throws
 away most of the available precision. Instead `CellBuffer.write` treats a cell
 as a mix: `density * fg + (1 - density) * bg`. It picks a glyph for coverage
 and then *solves for the foreground colour*, so the cell's average colour
-matches the light that actually arrived. Six glyphs render smooth gradients.
+matches the light that actually arrived. Six glyphs render smooth gradients —
+and because the colour is solved rather than looked up, swapping in a different
+set of characters changes what the frame is drawn *with* and not how bright it
+is. See "Glyph sets".
 
 Everything upstream feeds that: per-tile baked shadow fields, 3D-distance
 attenuation, wrap-around diffuse (pure Lambert goes black at grazing angles,
 which at this resolution reads as an artefact), fog, baked corner occlusion,
 and a filmic tone map so bright pools do not flatten to white.
+
+One consequence is worth stating on its own, because it decides the dither.
+A cell reproduces its colour **exactly** whenever the chosen glyph's coverage
+is at least the coverage the colour needs, and reproduces it **too dark** when
+it is less — the foreground that would compensate is past white. So the dither
+only ever pushes the choice toward a *heavier* glyph. A symmetric dither spends
+half its cells clipping, which showed up as a measurable dark bias at every
+ramp boundary; dithering upward costs nothing and gives the same texture.
+
+## Glyph sets
+
+`shading.ts` compiles three ramps and the viewer picks between them (`G`, or
+the topbar selector). All three go through the same coverage solve, so the
+*luminance* of a frame is identical in all three to within a rounding error —
+only the characters change.
+
+- **blocks** — ` ·░▒▓█`, the original.
+- **ascii** — ` .-:=+*o%#@█`, one character per level and no alternates. Twelve
+  levels give a gradient smooth enough that the dither barely has to work.
+- **material** — the block ramp's exact coverage levels with a characteristic
+  mark mixed into the middle of each: masonry gets courses, panelling gets
+  seams, water gets ripples, foliage gets scatter.
+
+Two things make `material` read as texture rather than as text, and the first
+version got both wrong:
+
+- **The accent is a minority, by weight.** A variant is chosen uniformly from
+  its level's list, so a character is made rare simply by repeating the block
+  it accents: `░░░═` puts a course line in one cell of four. Three
+  equally-likely alternates per level was the first attempt and the eye tracks
+  the characters instead of the light — the opposite of the point.
+- **The variant is welded to world space, and held by the hysteresis.** It is
+  hashed on a coarse lattice (`glyphSeed`), and — this is the part that matters
+  — the dead band holds the *glyph*, not the level, so a cell that is not
+  re-picking its brightness does not re-roll its character either. Without that
+  every wall shimmers as the world slides under it.
+
+Variants need not match their level's coverage exactly: `write` solves the
+colour against the coverage of the glyph it actually chose, so a light variant
+simply comes out with a brighter foreground.
 
 ## Outdoor worlds (heightmap terrain)
 
@@ -65,15 +109,16 @@ nothing is remembered — it is recomputed.
 
 ### The world is a heightmap
 
-Every tile carries a `height` (its top surface, in tiles) and a surface normal
-baked from its neighbours. That single field expresses everything the request
-asked for:
+Every tile carries a surface normal baked from its neighbours and **two**
+heights: `bed`, the top of the solid ground, and `height`, the top of whatever
+you can see — the water surface where there is water and the bed everywhere
+else. `depth` is the difference. Keeping the two apart is the whole water
+model; see below. Between them they express everything the request asked for:
 
 - **hills and valleys** — smooth noise
 - **cliffs** — terraced height in the highland biomes, quantised past what the
   player can step up
-- **rivers** — a ridge-noise channel carved below the local ground, flagged
-  `water`
+- **rivers and lakes** — a quantised water table over a carved bed
 - **buildings** — columns tall enough to be unclimbable, with a wall material
   on the side faces and a roof on top
 - **roads** — a ridge-noise band that flattens height and swaps the material
@@ -82,11 +127,48 @@ Walkability is derived rather than authored: you may step up or down by
 `STEP_HEIGHT`, so a gentle slope walks and a cliff does not. Buildings are just
 very tall columns, so nothing special is needed to keep you out of them.
 
+### Water: level pools and falls
+
+Water used to be a colour painted on the riverbed, so its surface followed
+every contour the bed did and a river visibly ran along the side of a hill.
+Now the surface is its own field, and it is **quantised**: `waterTable` takes
+the broad shape of the land and floors it to `pool`-tile steps. A tile is wet
+where its bed falls below that.
+
+Quantising a smooth field buys flatness for free. Every tile whose broad height
+lands inside one step shares one surface height *exactly*, so a body of water
+is level by construction rather than by relaxation — no flood fill, no
+iteration, and still a pure function of the coordinates, which is what lets the
+window regenerate identically when you walk back. Between two steps the surface
+drops by exactly `pool`, which is a waterfall. Level lakes and flowing drops
+are the same mechanism seen at different places on the same field.
+
+Three things this got wrong first:
+
+- **One octave of broad shape, not two.** The second octave is slow enough to
+  look smooth on its own, but quantising it still crosses a step every few
+  tiles: mean pool run went from 6.5 tiles to 4.4 by adding it back. A
+  staircase of one-tile pools is technically level and reads as a rockery.
+- **Rivers are only a shape in the ground.** The channel carves the bed; it
+  does not decide there is water in it. Whether a river bed floods is decided
+  by the same table test a hollow gets. One rule for all standing water is what
+  keeps the surface level where a channel opens into a lake.
+- **Settlements are lifted clear of the table**, or villages generate
+  underwater.
+
+Depth is what makes water read as water rather than as blue paint, and the
+heightmap knows it exactly — but a material per tile would be an allocation per
+tile per window rebuild, so it is quantised into `WATER_BANDS` shades per
+biome, shore to deep. At this resolution the banding reads as depth contours.
+A lake is also flat, so the diffuse sun paints every cell of it identically;
+the **sun glint** in the terrain pass is what says "surface". It is the one
+view-dependent thing in this renderer, and on water that is the correct answer.
+
 ### Getting around, and not getting stuck
 
 Movement outdoors is decided entirely by the heightmap: `canStep` refuses a
-move when the destination ground is more than `STEP_HEIGHT` **above your
-feet**. Three details matter, and the first two were bugs:
+move when the destination **bed** is more than `STEP_HEIGHT` above your
+feet. Four details matter, and the first two were bugs:
 
 - **Only upward steps are refused.** Blocking large drops as well seemed
   symmetrical and was wrong — it let you walk down into a hollow you could
@@ -96,6 +178,17 @@ feet**. Three details matter, and the first two were bugs:
   you are above, but walking into a cliff face still stops you.
 - **Buildings need no special case.** Their walls are columns too tall to
   climb, so the same rule keeps you out — and lets you fly over the roof.
+- **Swimming needs no special case either**, for the same reason the rule tests
+  the bed. Afloat, your feet sit near the water surface, so a deep bed is far
+  below them and poses no step at all — while a cliff rising out of the lake
+  still stops you exactly as it does on dry land.
+
+Wading and swimming are decided by depth alone. Past `SWIM_DEPTH` the eye rides
+the surface, and buoyancy *replaces* gravity rather than fighting it: a spring
+settling toward the waterline would bob, and bob is the one thing this renderer
+cannot have. Being *over* deep water is not being *in* it — the eye has to have
+reached the surface, or you float in mid-air the moment you jump off a cliff
+above a lake.
 
 Even so, terrain can produce a hollow no jump can leave, and tuning the
 generator until that is impossible would cost more than it is worth. Flight
@@ -136,7 +229,21 @@ Two rules are easy to get wrong:
 Terrain also needs a **sun**: point lights alone leave hills unreadable,
 because every top surface is horizontal and shades identically. The sun is a
 directional term using each tile's baked normal, which is what makes the
-landform legible.
+landform legible. Two things about it are not obvious:
+
+- **It has to sit low.** A heightmap's surfaces are nearly all horizontal, so a
+  high sun gives every one of them nearly the same `n·L` and the landform
+  vanishes into a flat wash. Measured: at 50 degrees of elevation a 15-degree
+  slope was 1.6x brighter than one tilted away from the sun; at 22 degrees it
+  is over 6x. Long light is what makes a landscape read.
+- **The terminator has to be wrapped, by shifting and not by flooring.** Pure
+  Lambert against a low sun draws a knife edge across every hill, and at
+  character resolution that reads as a tear in the image. `sunLight` shifts the
+  zero crossing (`(dot + w) / (1 + w)`) so the terminator spreads over several
+  tiles of slope. A *floor* (`w + (1-w)·max(0, dot)`) was tried first and is
+  worse: it lifts every back-facing surface equally, so shadow becomes a flat
+  grey wash and the frame loses the range the low sun was there to create —
+  glyph entropy over the outdoor maps fell from 2.0 to 1.4 on that alone.
 
 ## Infinite worlds (Wave Function Collapse)
 
@@ -235,11 +342,17 @@ shift, and getting that wrong is worse than not having them.
 Tuning a map's look is not intuitive, and the failure modes look like renderer
 bugs when they are not. In rough order of leverage:
 
-- **`exposure` is the master knob, and it wants to be well above 1.** The tone
-  curve is `x / (1 + x)`. At exposure 1 a white surface under a full-strength
-  light reaches only 0.5, which selects the *third* of six ramp glyphs — the
-  top of the ramp is unreachable by construction and everything reads as dim
-  noise. Interiors want roughly 2.5–3, the outdoor map wants ~1.9.
+- **`exposure` and `contrast` are the two master knobs and they pull against
+  each other.** Exposure slides the whole distribution; contrast widens it
+  about a pivot of 0.45. Tone mapping alone is aggressively compressive — every
+  built-in map once spent 98% of its cells on three adjacent glyphs and never
+  reached ` ` or `█` anywhere in the frame, which is mid-grey mush by
+  construction. Exposure cannot fix that on its own, it just slides the mush.
+  Interiors now want roughly 1.2–3.6 exposure with 1.85–2.0 contrast; outdoors,
+  1.0–1.9 with about 1.9.
+- **Exposure is easy to overshoot.** Averaged over a whole frame the numbers
+  keep improving as you raise it; then you stand next to a torch and the near
+  wall is a flat white sheet. Tune with the near view, not the average.
 - **`ambient` is a much weaker lever than it looks.** Sweeping it 0.26 → 0.06
   barely moves the glyph distribution once lights are present, because the
   lights dominate. Its real job is setting how black the unlit corners go.
@@ -249,12 +362,29 @@ bugs when they are not. In rough order of leverage:
   room produces a flat, evenly-lit wash. Keep radii meaningfully smaller than
   the room so the falloff is visible as a pool. This was the single biggest
   improvement to how "3D" the image reads.
+- **Fog is the quiet killer of colour outdoors.** It blends toward one flat
+  colour, so at any real density most of the frame converges on it and the
+  distance goes grey. Outdoor densities want to be around 0.006, not 0.012.
+- **Palettes need saturation to survive.** A warm sun over a desaturated ground
+  colour lands on neutral grey, and neutral grey is what "no contrast" looks
+  like in hue as well as in value.
+- **Pattern deviation has to cross a ramp step or it does not exist.** The
+  procedural patterns used to sit around ±15%, which sounds ample; after
+  roughness scales it and the tone curve compresses it, a whole wall of it
+  stayed inside one glyph and rendered flat.
 - **Aim for surfaces landing mid-ramp (`░`–`▓`).** At `·` (9% coverage) the
   foreground colour gets boosted ~10x to preserve the cell average, so a dim
   cell renders as a bright dot on black — a frame dominated by `·` reads as
   scattered noise rather than as a surface.
 
 `npm run typecheck` will not catch any of this. Render a frame and look at it.
+
+Two measurements are worth taking rather than eyeballing, and both are cheap
+under plain Node: the **glyph histogram** (what share the single commonest
+character holds — over about half and the frame is flat) and the **luminance
+p10/p50/p90** of the cells. Shannon entropy over the histogram is a useful
+single number, but do not optimise it blindly: it peaks on a uniform spread,
+which for a dungeon means evenly-lit mid-grey.
 
 ## Layout
 
@@ -269,9 +399,9 @@ bugs when they are not. In rough order of leverage:
       materials.ts      colour parsing, procedural patterns, stable hash
       raycast.ts        DDA grid march; thin-panel door intersection
       lighting.ts       per-tile shadow bake, attenuation, flicker, fog
-      shading.ts        CellBuffer: light -> (glyph, fg, bg); the core trick
+      shading.ts        CellBuffer: light -> (glyph, fg, bg); glyph sets; contrast
       renderer.ts       four passes: columns, floor/ceiling, walls, sprites
-      camera.ts         movement with per-axis wall sliding
+      camera.ts         movement with per-axis wall sliding; wading and swimming
       sprites.ts        density-art billboards
     src/ui/
       display.ts        canvas text grid: dirty-cell diffing + glyph atlas
@@ -304,7 +434,7 @@ Data flow per frame:
 
 ## Tests
 
-`npm test` runs 38 tests via `node --test` — no framework, no browser, because
+`npm test` runs 56 tests via `node --test` — no framework, no browser, because
 the engine is DOM-free. `npm run build` runs them between the typecheck and the
 bundle.
 
@@ -315,12 +445,21 @@ sealed-off room, a spawn inside rock — all of these produce a perfectly valid
 world that merely looks wrong, and none of them fail a typecheck. Notable:
 
 - `terrain.test.ts` asserts a tile depends only on its coordinates, which is
-  the property the endless outdoor world rests on.
+  the property the endless outdoor world rests on. It also pins the water
+  behaviour directly: every water surface sits on the pool lattice, neighbours
+  differ by zero or a whole step and never by a small slope, and over 90% of
+  neighbouring water is level — which is what separates a lake from a staircase
+  that satisfies the first two.
 - `world.test.ts` walks a world away and back and asserts the land came back
   identical, and drives the real `Camera` for 600 frames asserting it never
-  ends up inside geometry.
-- `shading.test.ts` checks a cell reconstructs the colour it was given, and
-  that an unchanged scene produces a byte-identical buffer.
+  ends up inside geometry. Swimming gets the same treatment: 1200 frames afloat
+  without entering the ground, plus a check that a shore at the waterline is
+  climbable and a cliff out of the same lake is not.
+- `shading.test.ts` checks a cell reconstructs the colour it was given **in
+  every glyph mode**, that an unchanged scene produces a byte-identical buffer,
+  and that a material ramp mixes its accent in as a minority — too much and the
+  surface reads as text, none at all and the variant lookup has silently
+  stopped working.
 
 When tuning a theme's sample art or a noise threshold, run the tests: the
 "every biome occurs" and "every theme solves cleanly" cases are what catch a
@@ -332,7 +471,7 @@ Complete and working end to end. The app builds, runs, and renders.
 
 Verified:
 
-- `npm run build` clean (60 KB JS / 3.6 KB CSS, ~22 KB gzipped, no deps).
+- `npm run build` clean (83 KB JS / 3.6 KB CSS, ~30 KB gzipped, no deps).
 - All six presets build headlessly and pass structural checks: no ragged grid
   rows, door axes correct, spawns legal, no light or entity buried in a wall,
   and no open tile unreachable from the spawn.
@@ -345,35 +484,71 @@ Verified:
   buildings and all four biomes occur; the land is bit-identical after walking
   away and back. Streaming an outdoor window is a full regenerate and costs far
   less than a WFC solve, since noise is evaluated per tile rather than solved.
+- Water covers ~9-11% of both themes, roughly three quarters of it deep enough
+  to swim. Pools average 6-8 tiles across a scanline and reach 45-60; every
+  water surface sits on the pool lattice and over 90% of neighbouring water is
+  exactly level, so what is not level is a fall rather than a slope.
 - Rendered in headless Chrome; viewport, minimap, telemetry and live editor all
-  work. Interior and outdoor (sky + stars) scenes both confirmed by eye.
+  work. Interior, outdoor and water scenes confirmed by eye in all three glyph
+  modes.
+- **Contrast measured**, since "the world needs more contrast" was the
+  complaint that started this. Per preset, over five headings from spawn:
+  the share of the frame held by its single commonest character, and the
+  luminance p10/p90 of its cells.
+
+  | preset | commonest glyph | p10 → p90 |
+  |---|---|---|
+  | vault (before) | 74% | 0.086 → 0.283 |
+  | vault (after) | 52% | 0.032 → 0.487 |
+  | catacombs (before) | 70% | 0.076 → 0.259 |
+  | catacombs (after) | 46% | 0.039 → 0.523 |
+  | wilds (before) | 59% | 0.147 → 0.511 |
+  | wilds (after) | 41% | 0.030 → 0.583 |
+
+  Roughly double the tonal range, spread over four or five glyphs instead of
+  three. It took `contrast` *and* a low sun *and* wider pattern deviation *and*
+  less fog; no one of them was enough on its own.
 - **Stability measured**, since that was the hardest requirement. Per frame, on
-  a 151x39 grid:
+  a 151x39 grid, in the Vault:
 
   | scenario | cells repainted | glyph changes |
   |---|---|---|
-  | still camera, no flicker | 0.0% | 0.0% |
-  | still, entities moving | 0.5% | 0.0% |
-  | still, torches flickering | 32% | 0.0% |
-  | turning 20 deg/s | 44% | 1.9% |
-  | walking 2.6 tiles/s | 64% | 1.7% |
+  | still camera, no flicker | 0.2% | 0.00% |
+  | still, torches flickering | 48% | 0.07% |
+  | turning 20 deg/s | 54% | 4.3% |
+  | walking 2.6 tiles/s | 59% | 4.3% |
 
-  The image is bit-identical at rest. Under motion the *characters* hold still
-  — under 2% change — and only their colours move. Flicker repaints a third of
-  the screen but changes no glyphs at all, so it reads as light rather than as
+  The image still comes to rest: at a standstill nothing moves and flicker
+  changes essentially no characters at all, so it reads as light rather than as
   churn. That gap between "cells repainted" and "glyphs changed" is the whole
   design working.
 
+  Under motion glyph churn is up from the ~1.8% this held before, and that is a
+  real cost of the contrast work rather than a bug: a steeper tone curve moves
+  `need` further for the same change in light, so the same dead band holds a
+  glyph across less of the world. Widening `HYSTERESIS` from 0.035 to 0.06
+  recovers part of it. `ascii` runs about 7% and `material` about 5.7%, for the
+  obvious reasons — twice as many levels to cross in one, a second thing that
+  can change in the other.
+
 Verification harnesses (headless map validator, render probe that prints a
-frame as text, stability probe) were written to the session scratchpad, not the
-repo. Recreate as needed; the engine is DOM-free, so it renders under plain
-Node with no browser involved. That is by far the fastest way to inspect a
-render change.
+frame as text, exposure/contrast sweep, water plan-view probe, stability probe)
+were written to the session scratchpad, not the repo. Recreate as needed; the
+engine is DOM-free, so it renders under plain Node with no browser involved.
+That is by far the fastest way to inspect a render change — but it prints
+characters, not colour, so finish in a browser. Several of the tuning problems
+above (fog draining the palette, a blown-out near wall) were invisible in the
+text dump and obvious in a screenshot.
 
 Remaining / not done:
 
-- No automated tests in the repo, and no CI.
+- No CI.
 - Not run on a non-Chromium browser, or on a real touch device.
+- The `material` glyph set is chosen by a material's `pattern`, so an author
+  cannot pick a ramp independently of the texture. That has been fine so far
+  because the two want to agree, but they need not.
+- Water has no flow direction, so a fall reads as a drop rather than as a
+  current, and rapids are a material rather than a shape.
 - Ideas deliberately left out: sprite sheets, per-tile distinct ceiling
-  textures, mouse-look invert, saving a map to the URL hash (would also make
-  preset screenshots scriptable).
+  textures, saving a map to the URL hash (would also make preset screenshots
+  scriptable).

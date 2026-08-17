@@ -16,6 +16,19 @@
           <input id="fontSize" type="range" min="8" max="26" step="1" value="14" />
           <output id="fontSizeOut">14</output>
         </label>
+        <label class="ctl">
+          glyphs
+          <select id="glyphMode" title="Which characters surfaces are drawn with">
+            <option value="blocks">blocks</option>
+            <option value="ascii">ascii</option>
+            <option value="material">material</option>
+          </select>
+        </label>
+        <label class="ctl">
+          contrast
+          <input id="contrast" type="range" min="0.6" max="1.6" step="0.05" value="1" />
+          <output id="contrastOut">1.00</output>
+        </label>
         <label class="ctl checkbox">
           <input id="showRays" type="checkbox" /> rays
         </label>
@@ -65,6 +78,7 @@
         <kbd>E</kbd> open/close door &middot;
         <kbd>R</kbd> respawn &middot;
         <kbd>M</kbd> rays &middot;
+        <kbd>G</kbd> glyph set &middot;
         <kbd>[</kbd><kbd>]</kbd> cell size
       </footer>
     </div>

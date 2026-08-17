@@ -45,6 +45,20 @@ const FLY_SPEED = 6;
 const INDOOR_MIN_Z = 0.12;
 const INDOOR_MAX_Z = 0.88;
 
+/**
+ * Water deeper than this stops being something you walk through and starts
+ * being something you float in. Set just under the eye, so you go under only
+ * at the point where standing would put your head below the surface anyway.
+ */
+const SWIM_DEPTH = 0.62;
+/** How far the eye sits above the water while swimming. */
+const SWIM_EYE = 0.16;
+/** Speed multipliers for wading and swimming. */
+const WADE_SPEED = 0.62;
+const SWIM_SPEED = 0.45;
+/** How fast the eye settles onto the water when you fall in. */
+const SWIM_FOLLOW = 7;
+
 export class Camera {
   x = 1.5;
   y = 1.5;
@@ -65,6 +79,11 @@ export class Camera {
    * is the way out. It also happens to be the best way to look at a landscape.
    */
   flying = false;
+
+  /** Standing in water shallow enough to walk through. */
+  wading = false;
+  /** Afloat: the water here is over your head, so the feet leave the bed. */
+  swimming = false;
 
   /** Vertical look, in screen rows offset from centre. */
   pitch = 0;
@@ -95,6 +114,10 @@ export class Camera {
     this.angle = angle;
     this.z = groundZ + EYE_HEIGHT;
     this.pitch = 0;
+    this.vz = 0;
+    this.grounded = true;
+    this.wading = false;
+    this.swimming = false;
     this.teleported = true;
     this.updateBasis();
   }
@@ -129,7 +152,8 @@ export class Camera {
 
     this.updateBasis();
 
-    const speed = WALK_SPEED * (input.run ? RUN_MULTIPLIER : 1) * dt;
+    const drag = this.flying ? 1 : this.swimming ? SWIM_SPEED : this.wading ? WADE_SPEED : 1;
+    const speed = WALK_SPEED * (input.run ? RUN_MULTIPLIER : 1) * drag * dt;
     let mx = 0;
     let my = 0;
     if (input.forward !== 0) {
@@ -159,10 +183,20 @@ export class Camera {
     this.updateVertical(dt, input, world);
   }
 
-  /** Gravity, jumping and flight. */
+  /** Gravity, jumping, swimming and flight. */
   private updateVertical(dt: number, input: MoveInput, world: World): void {
-    const groundZ = world.groundAt(this.x, this.y);
+    // The bed, not the surface: standing on `groundAt` in a lake would have
+    // you walking on the water. Depth is what decides between the two.
+    const groundZ = world.bedAt(this.x, this.y);
+    const depth = world.waterDepthAt(this.x, this.y);
     const restZ = groundZ + EYE_HEIGHT;
+    const surfaceZ = groundZ + depth;
+
+    // Being *over* deep water is not the same as being *in* it — the eye has
+    // to have reached the surface. Without that test you float in mid-air the
+    // moment you jump off a cliff above a lake.
+    this.swimming = !this.flying && depth > SWIM_DEPTH && this.z <= surfaceZ + SWIM_EYE + 0.05;
+    this.wading = !this.flying && !this.swimming && depth > 0.05 && this.z <= surfaceZ + EYE_HEIGHT;
 
     if (this.flying) {
       this.vz = 0;
@@ -173,6 +207,17 @@ export class Camera {
         this.z = restZ;
         this.grounded = true;
       }
+    } else if (this.swimming) {
+      // Afloat. Buoyancy replaces gravity entirely rather than fighting it:
+      // a spring settling toward the waterline would bob, and bob is the one
+      // thing this renderer cannot have — continuous sub-cell motion that no
+      // amount of glyph hysteresis will ever settle.
+      const floatZ = groundZ + depth + SWIM_EYE;
+      this.vz = 0;
+      this.grounded = false;
+      const k = Math.min(1, SWIM_FOLLOW * dt);
+      this.z += (floatZ - this.z) * k;
+      if (Math.abs(floatZ - this.z) < 0.002) this.z = floatZ;
     } else if (this.grounded) {
       if (input.jump) {
         this.vz = JUMP_SPEED;

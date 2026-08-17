@@ -19,10 +19,10 @@
  * colour.
  */
 
-import type { Material } from './types.ts';
+import type { Material, RGB } from './types.ts';
 import { makeMaterial, parseColor, parsePattern, rgb } from './materials.ts';
 import type { MapSourceMaterial } from './mapFormat.ts';
-import { fbm2, hashi, norm01, ridge2 } from './noise.ts';
+import { fbm2, hashi, noise2, norm01, ridge2 } from './noise.ts';
 
 export interface BiomeSpec {
   id: string;
@@ -48,6 +48,10 @@ export interface TerrainThemeSpec {
 
   biomes: BiomeSpec[];
   water: MapSourceMaterial;
+  /** Colour the water surface reaches at `waterDepth` tiles down. */
+  waterDeep: string;
+  /** Churning white water on the vertical face of a fall. */
+  falls: MapSourceMaterial;
   road: MapSourceMaterial;
   wall: MapSourceMaterial;
   yard: MapSourceMaterial;
@@ -57,9 +61,31 @@ export interface TerrainThemeSpec {
   /** Height of one terrace step in the rocky regions; also the cliff height. */
   terrace: number;
 
+  /**
+   * Height of one step of the water table — so, the height of a waterfall.
+   * Water is level within a step and falls between them; see `waterTable`.
+   */
+  pool: number;
+  /**
+   * How far the water table sits below the broad shape of the land. This is
+   * the knob that decides how wet the world is: at 0 every shallow hollow
+   * fills, and pushed far enough down only the carved river channels do.
+   */
+  waterOffset: number;
+  /** How deep a channel a river cuts below the surrounding land. */
+  riverDepth: number;
+  /** Depth at which water reaches its full `waterDeep` colour. */
+  waterDepth: number;
+
   ambient: number;
   ambientColor: string;
   exposure: number;
+  /**
+   * Spread of the tone curve. See `setContrast` in shading.ts — outdoors this
+   * matters more than anywhere else, because a sunlit landscape has no dark
+   * corners to anchor the bottom of the range.
+   */
+  contrast: number;
   fogColor: string;
   fogDensity: number;
   skyTop: string;
@@ -74,7 +100,19 @@ export interface TerrainThemeSpec {
 }
 
 export interface TerrainSample {
+  /**
+   * Top of whatever you can see: the water surface on a water tile, the ground
+   * everywhere else. This is what the renderer marches against.
+   */
   height: number;
+  /**
+   * Top of the solid ground, under any water. This is what the *legs* care
+   * about, and keeping the two apart is the whole reason a lake can be level
+   * while the bed beneath it is not.
+   */
+  bed: number;
+  /** `height - bed`; 0 on dry land. */
+  depth: number;
   /** Blocks movement outright: a building wall. */
   solid: boolean;
   water: boolean;
@@ -89,11 +127,22 @@ export interface TerrainSample {
 interface Palette {
   ground: Material[];
   cliff: Material[];
-  water: Material;
+  /**
+   * Water surfaces by biome and by depth band. Depth is the thing that makes
+   * water read as water rather than as blue paint, and a heightmap already
+   * knows it exactly — but a material per tile would be an allocation per tile
+   * per window rebuild, so it is quantised into bands instead. The banding is
+   * not a compromise: at this resolution it reads as depth contours.
+   */
+  water: Material[][];
+  falls: Material;
   road: Material;
   wall: Material;
   yard: Material;
 }
+
+/** How many depth bands the water is quantised into. */
+const WATER_BANDS = 6;
 
 const palettes = new WeakMap<TerrainThemeSpec, Palette>();
 
@@ -107,13 +156,37 @@ function mat(def: MapSourceMaterial, fallback = rgb(140, 140, 140)): Material {
   );
 }
 
+function mix(a: RGB, b: RGB, t: number): RGB {
+  return rgb(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t);
+}
+
+/**
+ * The depth ramp for one biome: wet ground at the shore, the theme's water
+ * colour just off it, and `waterDeep` in the middle.
+ */
+function waterBands(theme: TerrainThemeSpec, ground: RGB): Material[] {
+  const shallow = parseColor(theme.water.color, rgb(74, 127, 168));
+  const deep = parseColor(theme.waterDeep, rgb(20, 44, 74));
+  const shore = mix(mix(ground, rgb(0, 0, 0), 0.3), shallow, 0.5);
+  const out: Material[] = [];
+  for (let i = 0; i < WATER_BANDS; i++) {
+    const f = i / (WATER_BANDS - 1);
+    const near = mix(shore, shallow, Math.min(1, f * 2.2));
+    // Shallow water shows the bed through it, so it keeps some of the ground's
+    // texture; deep water is a smooth sheet.
+    out.push(makeMaterial('water', mix(near, deep, f), 'water', 0.5 - f * 0.32));
+  }
+  return out;
+}
+
 function paletteFor(theme: TerrainThemeSpec): Palette {
   let p = palettes.get(theme);
   if (!p) {
     p = {
       ground: theme.biomes.map((b) => mat(b.ground)),
       cliff: theme.biomes.map((b) => mat(b.cliff)),
-      water: mat(theme.water),
+      water: theme.biomes.map((b) => waterBands(theme, parseColor(b.ground.color, rgb(140, 140, 140)))),
+      falls: mat(theme.falls),
       road: mat(theme.road),
       wall: mat(theme.wall),
       yard: mat(theme.yard),
@@ -135,16 +208,57 @@ export function biomeAt(theme: TerrainThemeSpec, wx: number, wy: number, seed: n
   return (a * 2 + b) % n;
 }
 
+/** Slowly varying relief multiplier: some stretches roll, others are near flat. */
+function reliefAt(wx: number, wy: number, seed: number): number {
+  return 0.35 + 1.15 * norm01(fbm2(wx * 0.0034, wy * 0.0034, seed + 77, 3));
+}
+
+const LAND_FREQ = 0.0125;
+const LAND_OCTAVES = 5;
+/** Octaves counted as the broad shape of the land; the rest is surface detail. */
+const BROAD_OCTAVES = 1;
+// One octave, not two. The second octave is slow enough to look smooth on its
+// own, but quantising it still crosses a step every few tiles, and the result
+// is a staircase of one-tile pools rather than lakes: mean pool run went from
+// 6.5 tiles to 4.4 by adding it back.
+
 /**
- * Landform height, before buildings. Kept separate so a settlement can ask
- * what the ground would have been and flatten itself onto it.
+ * The landform's noise, split into its broad shape and its full detail.
+ *
+ * Water needs both. The bed follows every dip, but the *water table* has to
+ * follow only the broad shape — otherwise a lake surface casts every pebble on
+ * its floor and is no longer a surface at all. The split is a true low pass:
+ * the fine octaves are not dropped from `broad`, they are replaced by their
+ * mean, so `broad` and `full` are directly comparable and their difference is
+ * exactly the surface detail.
+ */
+function landNoise(wx: number, wy: number, seed: number, out: { broad: number; full: number }): void {
+  let amp = 1;
+  let freq = 1;
+  let full = 0;
+  let broad = 0;
+  let norm = 0;
+  for (let i = 0; i < LAND_OCTAVES; i++) {
+    const n = noise2(wx * LAND_FREQ * freq, wy * LAND_FREQ * freq, seed + i * 1013);
+    full += n * amp;
+    broad += (i < BROAD_OCTAVES ? n : 0.5) * amp;
+    norm += amp;
+    amp *= 0.5;
+    freq *= 2;
+  }
+  out.full = full / norm;
+  out.broad = broad / norm;
+}
+
+const landScratch = { broad: 0, full: 0 };
+
+/**
+ * Landform height, before rivers and buildings. Kept separate so a settlement
+ * can ask what the ground would have been and flatten itself onto it.
  */
 export function landHeight(theme: TerrainThemeSpec, wx: number, wy: number, seed: number): number {
-  // Broad shape, plus a slowly varying relief multiplier so some stretches are
-  // rolling and others nearly flat.
-  const base = norm01(fbm2(wx * 0.0125, wy * 0.0125, seed, 5));
-  const relief = 0.35 + 1.15 * norm01(fbm2(wx * 0.0034, wy * 0.0034, seed + 77, 3));
-  let h = (base - 0.5) * theme.amplitude * relief;
+  landNoise(wx, wy, seed, landScratch);
+  let h = (norm01(landScratch.full) - 0.5) * theme.amplitude * reliefAt(wx, wy, seed);
 
   // Rocky country: quantise to ledges taller than the player can step, which
   // is what turns a hillside into a cliff.
@@ -155,6 +269,31 @@ export function landHeight(theme: TerrainThemeSpec, wx: number, wy: number, seed
     h += (stepped - h) * strength;
   }
   return h;
+}
+
+/**
+ * Height of the water surface over a spot, whether or not there is water there.
+ *
+ * This is the answer to "lakes should be level, and a height difference should
+ * flow". Water used to be a colour painted on the riverbed, so its surface
+ * followed every contour the bed did — a river visibly ran along the side of a
+ * hill. Here the surface is its own field, and it is *quantised*: the broad
+ * shape of the land, floored to `pool`-tile steps.
+ *
+ * Quantising a smooth field is what buys flatness for free. Every tile whose
+ * broad height falls inside one step shares one surface height exactly, so a
+ * body of water is level by construction rather than by relaxation — no flood
+ * fill, no iteration, and still a pure function of the coordinates, which is
+ * what lets the window regenerate identically when you walk back.
+ *
+ * Between two steps the surface drops by exactly `pool`, which is a waterfall.
+ * So the two behaviours the request asked for are the same mechanism seen at
+ * different places on the same field.
+ */
+export function waterTable(theme: TerrainThemeSpec, wx: number, wy: number, seed: number): number {
+  landNoise(wx, wy, seed, landScratch);
+  const broad = (norm01(landScratch.broad) - 0.5) * theme.amplitude * reliefAt(wx, wy, seed);
+  return Math.floor(broad / theme.pool) * theme.pool + theme.waterOffset;
 }
 
 /** 0 outside a road, rising to 1 along its centre line. */
@@ -215,12 +354,17 @@ function buildingAt(wx: number, wy: number, seed: number): 0 | 1 | 2 {
   return 0;
 }
 
-/** Height a settlement sits on: the land at the middle of its lattice cell. */
+/**
+ * Height a settlement sits on: the land at the middle of its lattice cell,
+ * lifted clear of the waterline. Nobody builds a village in a lake, and a
+ * flooded courtyard reads as a bug rather than as a feature.
+ */
 function settlementBase(theme: TerrainThemeSpec, wx: number, wy: number, seed: number): number {
   const S = 58;
   const cx = Math.floor(wx / S) * S + (S >> 1);
   const cy = Math.floor(wy / S) * S + (S >> 1);
-  return landHeight(theme, cx, cy, seed);
+  const h = landHeight(theme, cx, cy, seed);
+  return Math.max(h, waterTable(theme, cx, cy, seed) + 0.5);
 }
 
 /** Everything the world needs to know about one outdoor tile. */
@@ -234,30 +378,29 @@ export function sampleTerrain(
   const pal = paletteFor(theme);
   const biome = biomeAt(theme, wx, wy, seed);
 
-  let h = landHeight(theme, wx, wy, seed);
+  let bed = landHeight(theme, wx, wy, seed);
   let surface = pal.ground[biome];
   let side = pal.cliff[biome];
-  let water = false;
   let bare = false;
   let solid = false;
+  let flooded = true;
 
-  // Rivers cut down through whatever the land was doing.
+  // Rivers cut down through whatever the land was doing. The channel is only
+  // a shape in the ground now — whether there is water in it is decided at the
+  // end, against the table, exactly as it is for a hollow that never saw a
+  // river. One rule for all standing water is what keeps the surface level.
   const river = riverStrength(wx, wy, seed);
   if (river > 0) {
-    h -= river * 1.9;
-    if (river > 0.22) {
-      water = true;
-      bare = true;
-      surface = pal.water;
-    }
+    bed -= river * theme.riverDepth;
+    if (river > 0.22) bare = true;
   }
 
   // Roads flatten the ground they run over: a road that follows every bump is
   // a goat track, not a road.
   const road = roadStrength(wx, wy, seed);
-  if (road > 0 && !water) {
+  if (road > 0) {
     const smooth = (fbm2(wx * 0.0105, wy * 0.0105, seed, 2) - 0.46) * theme.amplitude * 0.55;
-    h += (smooth - h) * road * 0.85;
+    bed += (smooth - bed) * road * 0.85;
     if (road > 0.3) {
       surface = pal.road;
       bare = true;
@@ -268,18 +411,40 @@ export function sampleTerrain(
   if (b !== 0) {
     const base = settlementBase(theme, wx, wy, seed);
     bare = true;
+    flooded = false; // settlements are lifted clear of the table by construction
     if (b === 1) {
-      h = base + 3.2;
+      bed = base + 3.2;
       solid = true;
       surface = pal.wall;
       side = pal.wall;
     } else {
-      h = base;
+      bed = base;
       surface = pal.yard;
     }
   }
 
-  out.height = h;
+  let height = bed;
+  let depth = 0;
+  let water = false;
+
+  if (flooded && !solid) {
+    const table = waterTable(theme, wx, wy, seed);
+    if (bed < table - 0.02) {
+      water = true;
+      bare = true;
+      height = table;
+      depth = table - bed;
+      const band = Math.min(WATER_BANDS - 1, Math.floor((depth / theme.waterDepth) * WATER_BANDS));
+      surface = pal.water[biome][band < 0 ? 0 : band];
+      // The exposed face of a water tile is either a fall onto the pool below
+      // or water spilling over a lip. Both are white water.
+      side = pal.falls;
+    }
+  }
+
+  out.height = height;
+  out.bed = bed;
+  out.depth = depth;
   out.solid = solid;
   out.water = water;
   out.surface = surface;
@@ -291,6 +456,8 @@ export function sampleTerrain(
 export function makeSample(): TerrainSample {
   return {
     height: 0,
+    bed: 0,
+    depth: 0,
     solid: false,
     water: false,
     surface: DEFAULT_SURFACE,
@@ -313,7 +480,7 @@ const WILDS: TerrainThemeSpec = {
   biomes: [
     {
       id: 'meadow',
-      ground: { color: '#8fa863', pattern: 'noise', roughness: 0.55 },
+      ground: { color: '#84ab4a', pattern: 'noise', roughness: 0.55 },
       cliff: { color: '#8d8474', pattern: 'rock', roughness: 0.8 },
       trees: 0.035,
       shrubs: 0.045,
@@ -324,7 +491,7 @@ const WILDS: TerrainThemeSpec = {
     },
     {
       id: 'forest',
-      ground: { color: '#5f7a4a', pattern: 'noise', roughness: 0.65 },
+      ground: { color: '#487a33', pattern: 'noise', roughness: 0.65 },
       cliff: { color: '#7d7466', pattern: 'rock', roughness: 0.8 },
       trees: 0.15,
       shrubs: 0.04,
@@ -335,7 +502,7 @@ const WILDS: TerrainThemeSpec = {
     },
     {
       id: 'highland',
-      ground: { color: '#9a9384', pattern: 'rock', roughness: 0.75 },
+      ground: { color: '#9c8f6e', pattern: 'rock', roughness: 0.75 },
       cliff: { color: '#a09585', pattern: 'rock', roughness: 0.85 },
       trees: 0.022,
       shrubs: 0.025,
@@ -346,7 +513,7 @@ const WILDS: TerrainThemeSpec = {
     },
     {
       id: 'marsh',
-      ground: { color: '#6d7f5c', pattern: 'noise', roughness: 0.7 },
+      ground: { color: '#5c8449', pattern: 'noise', roughness: 0.7 },
       cliff: { color: '#6f6a5c', pattern: 'rock', roughness: 0.75 },
       trees: 0.05,
       shrubs: 0.10,
@@ -356,20 +523,35 @@ const WILDS: TerrainThemeSpec = {
       rockSprite: 'boulder',
     },
   ],
-  water: { color: '#4a7fa8', pattern: 'noise', roughness: 0.25 },
+  water: { color: '#4a7fa8', pattern: 'water', roughness: 0.4 },
+  waterDeep: '#132f4c',
+  falls: { color: '#d6e6ee', pattern: 'noise', roughness: 0.95 },
   road: { color: '#9c8f76', pattern: 'noise', roughness: 0.4 },
   wall: { color: '#a89a80', pattern: 'brick', roughness: 0.7 },
   yard: { color: '#8e8570', pattern: 'tile', roughness: 0.5 },
 
-  ambient: 0.24,
-  ambientColor: '#7b93bd',
-  exposure: 1.5,
-  fogColor: '#9fb2c6',
-  fogDensity: 0.013,
-  skyTop: '#3f6ea8',
-  skyHorizon: '#a8c0d6',
+  pool: 1.0,
+  waterOffset: -2.2,
+  riverDepth: 2.6,
+  waterDepth: 2.2,
+
+  ambient: 0.10,
+  ambientColor: '#6b86b4',
+  exposure: 1.9,
+  contrast: 1.85,
+  fogColor: '#7d95ad',
+  fogDensity: 0.0062,
+  // Deep overhead, pale at the horizon. A bright even sky is a third of an
+  // outdoor frame spent on one glyph, and it flattens the land it sits over.
+  skyTop: '#14355c',
+  skyHorizon: '#8ea8bf',
   stars: 0,
-  sun: { x: 0.45, y: -0.35, z: 0.66, color: '#ffe8bd', intensity: 1.35 },
+  // Low, not overhead. A heightmap's surfaces are nearly all horizontal, so a
+  // high sun gives every one of them the same n.L and the landform vanishes
+  // into a flat wash — measurably: at 50 degrees a 15-degree slope was only
+  // 1.6x brighter than one tilted away from the sun, and at 22 degrees it is
+  // over 6x. Long light is what makes a landscape read.
+  sun: { x: 0.73, y: -0.57, z: 0.375, color: '#ffe3b0', intensity: 1.9 },
   torch: { radius: 7, color: '#ffb060', intensity: 1.5, flicker: 0.35 },
   lantern: { radius: 4.5, color: '#ffd0a0', intensity: 0.25 },
 };
@@ -383,7 +565,7 @@ const BADLANDS: TerrainThemeSpec = {
   biomes: [
     {
       id: 'flats',
-      ground: { color: '#c2a075', pattern: 'noise', roughness: 0.5 },
+      ground: { color: '#cda05a', pattern: 'noise', roughness: 0.5 },
       cliff: { color: '#a87350', pattern: 'brick', roughness: 0.85 },
       trees: 0.008,
       shrubs: 0.04,
@@ -395,7 +577,7 @@ const BADLANDS: TerrainThemeSpec = {
     },
     {
       id: 'mesa',
-      ground: { color: '#b07a52', pattern: 'rock', roughness: 0.8 },
+      ground: { color: '#bc6f36', pattern: 'rock', roughness: 0.8 },
       cliff: { color: '#9c5f3e', pattern: 'brick', roughness: 0.9 },
       trees: 0.004,
       shrubs: 0.02,
@@ -407,7 +589,7 @@ const BADLANDS: TerrainThemeSpec = {
     },
     {
       id: 'scrub',
-      ground: { color: '#a89865', pattern: 'noise', roughness: 0.6 },
+      ground: { color: '#b09a44', pattern: 'noise', roughness: 0.6 },
       cliff: { color: '#96704a', pattern: 'rock', roughness: 0.85 },
       trees: 0.01,
       shrubs: 0.07,
@@ -419,7 +601,7 @@ const BADLANDS: TerrainThemeSpec = {
     },
     {
       id: 'wash',
-      ground: { color: '#b8a887', pattern: 'noise', roughness: 0.45 },
+      ground: { color: '#c4a870', pattern: 'noise', roughness: 0.45 },
       cliff: { color: '#9a7c58', pattern: 'rock', roughness: 0.8 },
       trees: 0.006,
       shrubs: 0.05,
@@ -430,20 +612,28 @@ const BADLANDS: TerrainThemeSpec = {
       tint: '#94975e',
     },
   ],
-  water: { color: '#5f8f9a', pattern: 'noise', roughness: 0.25 },
+  water: { color: '#5f8f9a', pattern: 'water', roughness: 0.4 },
+  waterDeep: '#1b4048',
+  falls: { color: '#e2e8e0', pattern: 'noise', roughness: 0.95 },
   road: { color: '#b09a72', pattern: 'noise', roughness: 0.35 },
   wall: { color: '#b08a62', pattern: 'brick', roughness: 0.75 },
   yard: { color: '#9c8a68', pattern: 'tile', roughness: 0.5 },
 
-  ambient: 0.26,
-  ambientColor: '#a08f7a',
-  exposure: 1.45,
-  fogColor: '#cdb492',
-  fogDensity: 0.012,
-  skyTop: '#5a7fae',
-  skyHorizon: '#d8c19a',
+  pool: 1.35,
+  waterOffset: -2.8,
+  riverDepth: 2.8,
+  waterDepth: 2.0,
+
+  ambient: 0.11,
+  ambientColor: '#8c7f70',
+  exposure: 1.15,
+  contrast: 1.9,
+  fogColor: '#a88d68',
+  fogDensity: 0.0058,
+  skyTop: '#1e3f6b',
+  skyHorizon: '#bd9a6a',
   stars: 0,
-  sun: { x: -0.4, y: -0.3, z: 0.7, color: '#ffe3a8', intensity: 1.45 },
+  sun: { x: -0.73, y: -0.55, z: 0.41, color: '#ffdb98', intensity: 2.0 },
   torch: { radius: 7, color: '#ffb060', intensity: 1.5, flicker: 0.35 },
   lantern: { radius: 4.5, color: '#ffd0a0', intensity: 0.25 },
 };

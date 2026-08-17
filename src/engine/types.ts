@@ -14,7 +14,8 @@ export type PatternId =
   | 'panel'
   | 'grate'
   | 'tile'
-  | 'planks';
+  | 'planks'
+  | 'water';
 
 export interface Material {
   id: string;
@@ -24,6 +25,11 @@ export interface Material {
   roughness: number;
   /** Self-illumination, added on top of scene lighting. */
   emissive: number;
+  /**
+   * Which glyph ramp draws this surface in `material` mode. Derived from the
+   * pattern once, here, so the renderer never does a string compare per cell.
+   */
+  glyphSlot: number;
 }
 
 export const TILE_EMPTY = 0;
@@ -46,15 +52,24 @@ export interface Tile {
 
   // ------------------------------------------------- outdoor worlds only
   /**
-   * Elevation of this tile's top surface, in tiles. Always 0 for indoor maps,
-   * which keeps the flat-floor renderer exactly as it was.
+   * Elevation of this tile's *visible* top surface, in tiles: the water
+   * surface where there is water, the ground everywhere else. Always 0 for
+   * indoor maps, which keeps the flat-floor renderer exactly as it was.
    */
   height: number;
+  /**
+   * Elevation of the solid ground, under any water. Equal to `height` on dry
+   * land. Movement reads this and rendering reads `height`, which is the whole
+   * reason a lake can be level over a bed that is not.
+   */
+  bed: number;
+  /** `height - bed`. 0 on dry land; drives the water's colour and swimming. */
+  depth: number;
   /** Surface normal, baked from neighbouring heights. Drives the sun term. */
   nx: number;
   ny: number;
   nz: number;
-  /** Shallow water: walkable, but shaded and textured as a river surface. */
+  /** Standing water: this tile's top surface is a water surface. */
   water: boolean;
   /** Material of the vertical face where this tile steps up from its neighbour. */
   side: Material | null;
@@ -129,6 +144,8 @@ export interface SpriteDef {
   height: number;
   /** Height of the sprite's bottom edge above the floor, in tiles. */
   base: number;
+  /** Which glyph ramp draws this sprite in `material` mode. */
+  glyphSlot: number;
 }
 
 export interface Entity {
