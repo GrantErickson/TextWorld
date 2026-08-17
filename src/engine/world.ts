@@ -1020,8 +1020,12 @@ export class World {
           nz: 1,
           water: s.water,
           side: s.side,
-          sideLower: null,
-          bandZ: 0,
+          // The shopfront band. Dropping these on the floor here is invisible
+          // in every way except the one that matters: the renderer's lower-band
+          // test silently never fires and every facade comes out in one skin
+          // from pavement to roof, which is the exact thing it exists to stop.
+          sideLower: s.sideLower,
+          bandZ: s.bandZ,
           bare: s.bare,
           biome: s.biome,
           storeys: s.storeys,

@@ -342,6 +342,19 @@ test('buildings have a ground floor distinct from the storeys above', () => {
   assert.ok(built > 0);
   assert.equal(shopfronts, built, 'some buildings have no ground floor');
   assert.ok(signs > 0 && signs < built * 0.6, `${signs} of ${built} lots are signed`);
+
+  // And the band has to survive the trip into the tile, which is the half of
+  // this that actually failed: the sample computed a shopfront for every lot
+  // and the tile builder dropped it, so the renderer's lower-band test never
+  // once fired and every facade came out in one skin. Asserting on the sample
+  // alone cannot see that; the renderer reads the tile.
+  const world = World.fromCity(spec, SEED);
+  const walls = world.tiles.filter((t) => t.storeys > 0);
+  assert.ok(walls.length > 0, 'no buildings in the window');
+  assert.ok(
+    walls.every((t) => t.sideLower !== null && t.bandZ > 0),
+    'buildings reached the tile without their ground floor',
+  );
 });
 
 test('windows and signs light up only as it gets dark', () => {
