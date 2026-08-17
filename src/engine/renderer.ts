@@ -538,6 +538,10 @@ export class Renderer {
         // reduces to the one interval between the two heights, which is what
         // the height-per-tile version drew.
         let nFace = 0;
+        // The top of everything solid in the column the light would have to
+        // cross to get here. A face below it is indoors; see the sun below.
+        let prevTop = -Infinity;
+        for (let j = 0; j < nPrev; j++) if (prev[j].hi > prevTop) prevTop = prev[j].hi;
         if (dNear > 0.02) {
           for (let i = 0; i < nCur && nFace < 64; i++) {
             const hi = cur[i].hi;
@@ -570,9 +574,18 @@ export class Renderer {
           const ny = side === 0 ? 0 : -stepY;
           const u = side === 0 ? wy : wx;
           const fogF = world.fogDensity > 0 ? 1 - Math.exp(-dNear * world.fogDensity) : 0;
-          const sun = sunLight(world, nx, ny, 0);
+          const facing = sunLight(world, nx, ny, 0);
 
           for (let f = 0; f < nFace && remaining > 0; f++) {
+            // Sunlight arrives across the column in front of this face, so a
+            // face standing below the top of *that* column is indoors and gets
+            // none of it. Only the interval above everything opposite can be
+            // exposed, which for a street and a facade is the whole wall and
+            // inside a room is nothing at all. Without the test the sun pours
+            // through the ceiling and lights the shop floor as if it were the
+            // pavement — measured at 40% brighter than the ceiling over it,
+            // which reads as a lit floor under a void rather than as a room.
+            const sun = this.faceLo[f] >= prevTop - 1e-6 ? facing : 0;
             const rowTop = horizon + (projY * (camZ - this.faceHi[f])) / dNear;
             const rowBot = horizon + (projY * (camZ - this.faceLo[f])) / dNear;
             const y0 = Math.max(0, Math.ceil(rowTop - 0.5));
@@ -656,17 +669,19 @@ export class Renderer {
           // water; a slab inside a building is flat and dry by construction.
           const ground = this.planeSpan[s] === 0;
           const mat = up ? tile.floor : tile.ceiling;
-          const sun = up
-            ? ground
-              ? sunLight(world, tile.nx, tile.ny, tile.nz)
-              : sunLight(world, 0, 0, 1)
-            : sunLight(world, 0, 0, -1);
+          // Nothing gets the sun through a floor above it. A top surface sees
+          // the sky only when it is the highest span of its column — for a
+          // street, a hillside or a roof that is the only span there is, so
+          // this changes nothing outdoors — and an underside never does,
+          // whatever the sun's elevation.
+          const sky = up && this.planeSpan[s] === nCur - 1;
+          const sun = sky ? (ground ? sunLight(world, tile.nx, tile.ny, tile.nz) : sunLight(world, 0, 0, 1)) : 0;
           // A lake is flat, so the diffuse sun term paints every cell of it
           // the same colour and it reads as a hole rather than a surface.
           // The glint is what says "water": a view-dependent highlight, so
           // it slides across the pool as you walk — the one place in this
           // renderer where something moving is the correct answer.
-          const glinty = up && ground && tile.water && world.sunIntensity > 0;
+          const glinty = sky && ground && tile.water && world.sunIntensity > 0;
 
           for (let y = y0; y <= y1; y++) {
             if (done[y]) continue;

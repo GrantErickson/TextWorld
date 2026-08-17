@@ -129,6 +129,12 @@ test('a slab overhead is drawn as a ceiling where there would be sky', () => {
   // into the wrong rows still produces a plausible frame, and one whose
   // distance comes out inverted produces a plausible frame that is inside out.
   const world = World.fromCity(CITY_THEMES.city, 7);
+  // After dark, so the only thing the roof changes is what is overhead. By
+  // day it also — correctly — puts the street below it into shade, and the
+  // point of the second half of this test is that the *geometry* under the
+  // horizon does not move.
+  world.timeOfDay = 0.02;
+  world.advanceClock(0);
   const cam = new Camera();
   const r = new Renderer();
   const COLS = 60;

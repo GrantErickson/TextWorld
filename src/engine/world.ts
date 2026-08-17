@@ -88,6 +88,16 @@ const INTERIOR_LIGHT_CULL = 22;
  * or two.
  */
 const LIGHT_BUDGET = 64;
+/**
+ * Room lamps. The radius has to stay meaningfully under the size of a room —
+ * a light that reaches the far wall lights it evenly and reads as fog, and it
+ * is the falloff that makes a space read as a space. The spacing then has to
+ * be tight enough that every room catches a lattice point: at anything much
+ * wider a small room comes out with no lamp in it at all.
+ */
+const ROOM_LAMP_SPACING = 6;
+const ROOM_LAMP_RADIUS = 4.4;
+const ROOM_LAMP_INTENSITY = 5.0;
 
 /**
  * Biggest height change the player can walk over, in tiles. Terrain terraces
@@ -1173,7 +1183,7 @@ export class World {
    * with the door shut, which is the opposite of what a street lamp wants.
    */
   private lightInteriors(px: number, py: number): void {
-    const spacing = 6;
+    const spacing = ROOM_LAMP_SPACING;
     const bx0 = Math.floor((px - INTERIOR_LIGHT_CULL) / spacing);
     const bx1 = Math.floor((px + INTERIOR_LIGHT_CULL) / spacing);
     const by0 = Math.floor((py - INTERIOR_LIGHT_CULL) / spacing);
@@ -1184,14 +1194,14 @@ export class World {
         // Snapped to the lattice point itself rather than hunted for: a search
         // would pull several lattice points onto the same tile of a small room
         // and stack lights on top of each other.
-        const x = bx * spacing + 3;
-        const y = by * spacing + 3;
+        const x = bx * spacing + (spacing >> 1);
+        const y = by * spacing + (spacing >> 1);
         const t = this.tileAt(x, y);
         if (!t || !t.interior) continue;
         const dx = x + 0.5 - px;
         const dy = y + 0.5 - py;
         if (dx * dx + dy * dy > INTERIOR_LIGHT_CULL * INTERIOR_LIGHT_CULL) continue;
-        const light = makeLight(x + 0.5, y + 0.5, 5.5, '#ffe6c4', 1.5, 0, 0, -1);
+        const light = makeLight(x + 0.5, y + 0.5, ROOM_LAMP_RADIUS, '#ffe6c4', ROOM_LAMP_INTENSITY, 0, 0, -1);
         light.z = t.bed + STOREY * 0.72;
         this.lights.push(light);
       }

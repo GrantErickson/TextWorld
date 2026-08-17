@@ -626,13 +626,15 @@ const DOWNTOWN: CityThemeSpec = {
   ],
   park: { color: '#5f7a52', pattern: 'noise', roughness: 0.6 },
   paint: { color: '#cdc9b4', pattern: 'solid', roughness: 0.15 },
-  // Inside. Lighter than anything outside, because a room is lit by one lamp
-  // rather than by the sky and needs the reflectance to make up the
-  // difference — a dark floor in here lands on the bottom glyph and the room
-  // reads as a hole rather than as somewhere you are standing.
-  interiorFloor: { color: '#a89a86', pattern: 'tile', roughness: 0.35 },
-  interiorCeiling: { color: '#b9b4ac', pattern: 'panel', roughness: 0.25 },
-  interiorWall: { color: '#b0a89c', pattern: 'panel', roughness: 0.4 },
+  // Inside. Darker than the street, which is the opposite of what it looks
+  // like it should be. A room is lit by one lamp against an ambient set for
+  // open air, so with a light surface the ambient alone carries most of the
+  // frame and everything lands in the same narrow band — measured at a p10 to
+  // p90 of 0.28 to 0.48, which is a wash. Darker here and a stronger lamp puts
+  // the range back into the falloff, where it reads as a pool of light.
+  interiorFloor: { color: '#7a6e60', pattern: 'tile', roughness: 0.35 },
+  interiorCeiling: { color: '#857f77', pattern: 'panel', roughness: 0.25 },
+  interiorWall: { color: '#80796e', pattern: 'panel', roughness: 0.4 },
 
   exposure: 1.5,
   fogColor: '#9fb0c2',
