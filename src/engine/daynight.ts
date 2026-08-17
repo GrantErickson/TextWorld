@@ -20,7 +20,7 @@ const TAU = Math.PI * 2;
 export const DAY_LENGTH = 240;
 
 /** Below this sun altitude the lamps are lit. */
-const LAMP_ON = 0.09;
+const LAMP_ON = 0.12;
 
 export interface SkyState {
   /** Sun altitude, -1 at midnight to +1 at noon. */
@@ -59,58 +59,53 @@ interface Key {
 const KEYS: Key[] = [
   {
     at: -1,
-    sun: rgb(120, 140, 200),
-    sunI: 0.1,
-    ambient: 0.1,
-    ambientColor: rgb(56, 74, 122),
-    top: rgb(5, 7, 16),
-    horizon: rgb(16, 22, 40),
-    fog: rgb(12, 16, 30),
-    stars: 0.75,
+    sun: rgb(120, 140, 200), sunI: 0.1, ambient: 0.1, ambientColor: rgb(56, 74, 122),
+    top: rgb(5, 7, 16), horizon: rgb(16, 22, 40), fog: rgb(12, 16, 30), stars: 0.78,
   },
   {
-    at: -0.12,
-    sun: rgb(150, 150, 200),
-    sunI: 0.12,
-    ambient: 0.13,
-    ambientColor: rgb(70, 86, 130),
-    top: rgb(18, 26, 54),
-    horizon: rgb(70, 62, 84),
-    fog: rgb(44, 46, 66),
-    stars: 0.4,
+    at: -0.42,
+    sun: rgb(126, 146, 202), sunI: 0.1, ambient: 0.105, ambientColor: rgb(60, 78, 124),
+    top: rgb(7, 10, 22), horizon: rgb(22, 28, 50), fog: rgb(16, 21, 38), stars: 0.74,
   },
   {
-    at: 0.06,
-    sun: rgb(255, 150, 92),
-    sunI: 0.75,
-    ambient: 0.2,
-    ambientColor: rgb(120, 116, 150),
-    top: rgb(52, 74, 132),
-    horizon: rgb(226, 140, 96),
-    fog: rgb(190, 150, 140),
-    stars: 0,
+    at: -0.26,
+    sun: rgb(136, 148, 198), sunI: 0.11, ambient: 0.115, ambientColor: rgb(68, 84, 130),
+    top: rgb(12, 17, 38), horizon: rgb(40, 42, 68), fog: rgb(28, 33, 54), stars: 0.6,
   },
   {
-    at: 0.35,
-    sun: rgb(255, 214, 168),
-    sunI: 1.25,
-    ambient: 0.28,
-    ambientColor: rgb(128, 150, 190),
-    top: rgb(62, 110, 176),
-    horizon: rgb(178, 200, 220),
-    fog: rgb(168, 186, 204),
-    stars: 0,
+    at: -0.15,
+    sun: rgb(168, 154, 190), sunI: 0.14, ambient: 0.13, ambientColor: rgb(84, 94, 134),
+    top: rgb(20, 29, 58), horizon: rgb(78, 68, 90), fog: rgb(50, 52, 72), stars: 0.38,
+  },
+  {
+    at: -0.07,
+    sun: rgb(208, 148, 150), sunI: 0.3, ambient: 0.155, ambientColor: rgb(104, 104, 142),
+    top: rgb(32, 46, 88), horizon: rgb(140, 100, 106), fog: rgb(96, 88, 100), stars: 0.16,
+  },
+  {
+    at: 0,
+    sun: rgb(240, 140, 104), sunI: 0.5, ambient: 0.175, ambientColor: rgb(114, 112, 146),
+    top: rgb(44, 62, 112), horizon: rgb(196, 124, 96), fog: rgb(146, 122, 122), stars: 0.05,
+  },
+  {
+    at: 0.08,
+    sun: rgb(255, 158, 100), sunI: 0.82, ambient: 0.205, ambientColor: rgb(124, 122, 154),
+    top: rgb(54, 78, 136), horizon: rgb(230, 152, 108), fog: rgb(192, 156, 142), stars: 0,
+  },
+  {
+    at: 0.2,
+    sun: rgb(255, 190, 140), sunI: 1.05, ambient: 0.245, ambientColor: rgb(130, 140, 176),
+    top: rgb(58, 96, 158), horizon: rgb(206, 190, 190), fog: rgb(186, 178, 180), stars: 0,
+  },
+  {
+    at: 0.42,
+    sun: rgb(255, 224, 182), sunI: 1.3, ambient: 0.285, ambientColor: rgb(132, 154, 194),
+    top: rgb(60, 112, 180), horizon: rgb(182, 204, 222), fog: rgb(172, 190, 206), stars: 0,
   },
   {
     at: 1,
-    sun: rgb(255, 246, 226),
-    sunI: 1.5,
-    ambient: 0.32,
-    ambientColor: rgb(140, 164, 200),
-    top: rgb(58, 118, 196),
-    horizon: rgb(190, 212, 230),
-    fog: rgb(178, 196, 214),
-    stars: 0,
+    sun: rgb(255, 246, 226), sunI: 1.5, ambient: 0.32, ambientColor: rgb(140, 164, 200),
+    top: rgb(58, 118, 196), horizon: rgb(190, 212, 230), fog: rgb(178, 196, 214), stars: 0,
   },
 ];
 
@@ -181,7 +176,7 @@ export function skyAt(t: number, out: SkyState): void {
 
   // Lamps fade in over a band rather than snapping, so dusk has a moment where
   // both the sky and the lamps are contributing.
-  const lamp = (LAMP_ON - altitude) / 0.22;
+  const lamp = (LAMP_ON - altitude) / 0.34;
   out.lampness = lamp < 0 ? 0 : lamp > 1 ? 1 : lamp;
 }
 

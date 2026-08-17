@@ -711,6 +711,13 @@ export class Renderer {
       const bg = def.color.g / 255;
       const bb = def.color.b / 255;
 
+      // Sway is a shear, not a shift: the offset scales with height up the
+      // sprite so the foot stays planted and the crown moves.
+      const swayCols =
+        e.sway > 0
+          ? (Math.sin(world.time * 1.15 + e.bobPhase) * e.sway * artW) / Math.max(0.01, def.width)
+          : 0;
+
       const xStart = Math.max(0, Math.ceil(colL - 0.5));
       const xEnd = Math.min(cols - 1, Math.floor(colR - 0.5));
       const yStart = Math.max(0, Math.ceil(rowT - 0.5));
@@ -720,7 +727,8 @@ export class Renderer {
 
       for (let x = xStart; x <= xEnd; x++) {
         if (!this.cellDepth && tY >= this.zbuf[x]) continue; // hidden behind geometry
-        let au = Math.floor(((x + 0.5 - colL) / spanX) * artW);
+        const auBase = ((x + 0.5 - colL) / spanX) * artW;
+        let au = Math.floor(auBase);
         if (au < 0) au = 0;
         else if (au >= artW) au = artW - 1;
 
@@ -728,12 +736,21 @@ export class Renderer {
           // Outdoors every row of a column sits at its own distance, so the
           // test has to be per cell rather than per column.
           if (this.cellDepth && tY >= this.depth[y * cols + x]) continue;
-          let av = Math.floor(((y + 0.5 - rowT) / spanY) * artH);
+          const avf = ((y + 0.5 - rowT) / spanY) * artH;
+          let av = Math.floor(avf);
           if (av < 0) av = 0;
           else if (av >= artH) av = artH - 1;
 
+          let ax = au;
+          if (swayCols !== 0) {
+            // 1 at the crown, 0 at the foot.
+            const lean = swayCols * (1 - avf / artH);
+            ax = Math.floor(auBase - lean);
+            if (ax < 0 || ax >= artW) continue;
+          }
+
           const row = def.art[av];
-          const ch = au < row.length ? row[au] : ' ';
+          const ch = ax < row.length ? row[ax] : ' ';
           const density = DENSITY_CHARS[ch];
           if (density === undefined || density < 0) continue;
 

@@ -135,13 +135,14 @@ function applySource(text: string, keepView: boolean): boolean {
   const sameShape =
     keepView && haveWorld && world.width === next.width && world.height === next.height;
   if (sameShape && next.canOccupy(camera.x, camera.y, 0.24)) {
-    camera.placeAt(camera.x, camera.y, camera.angle, next.groundAt(camera.x, camera.y));
+    camera.placeAt(camera.x, camera.y, camera.angle, next.groundAt(camera.x, camera.y), next.eyeHeight);
   } else {
     camera.placeAt(
       next.spawnX,
       next.spawnY,
       next.spawnAngle,
       next.groundAt(next.spawnX, next.spawnY),
+      next.eyeHeight,
     );
   }
 
@@ -351,6 +352,7 @@ function frame(now: number): void {
       world.spawnY,
       world.spawnAngle,
       world.groundAt(world.spawnX, world.spawnY),
+      world.eyeHeight,
     );
     needsRedraw = true;
   }

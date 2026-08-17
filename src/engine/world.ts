@@ -19,6 +19,7 @@ import type { TerrainSample, TerrainThemeSpec } from './terrain.ts';
 import { lookupTerrainTheme, makeSample, sampleTerrain, terrainThemeIds } from './terrain.ts';
 import { hashi } from './noise.ts';
 import { LIGHT_HEIGHT } from './lighting.ts';
+import { EYE_HEIGHT } from './camera.ts';
 import type { SkyState } from './daynight.ts';
 import { DAY_LENGTH, makeSkyState, skyAt } from './daynight.ts';
 import type { CitySample, CityThemeSpec, StreetInfo } from './city.ts';
@@ -104,6 +105,8 @@ const CAR_TINTS: RGB[] = [
 const SIGNAL_RED_TINT: RGB = rgb(255, 70, 58);
 const SIGNAL_AMBER_TINT: RGB = rgb(255, 176, 48);
 const SIGNAL_GREEN_TINT: RGB = rgb(96, 236, 118);
+/** How far, in tiles, the top of a plant leans as it sways. */
+const SWAYS: Record<string, number> = { tree: 0.13, pine: 0.09, shrub: 0.06, reeds: 0.1, plant: 0.07 };
 const PERSON_TINTS: RGB[] = [
   rgb(196, 170, 146),
   rgb(150, 126, 108),
@@ -179,6 +182,13 @@ export class World {
 
   /** True for outdoor heightmap worlds, which render through a different path. */
   terrain = false;
+
+  /**
+   * Height of the eye above the feet, in tiles. Indoor maps are built around
+   * one-tile-tall walls and a ceiling to match, so they keep the original
+   * half-tile; a city is built at human scale and wants a human viewpoint.
+   */
+  eyeHeight = EYE_HEIGHT;
 
   /** Directional light. Only terrain uses it; it is what shades the landform. */
   sunX = 0;
@@ -773,6 +783,7 @@ export class World {
         speed: e.speed ?? 0,
         bob: e.bob ?? (def.base > 0 ? 0.05 : 0),
         bobPhase: index * 1.7,
+        sway: 0,
         lightIndex,
       });
     }
@@ -867,6 +878,7 @@ export class World {
     world.fogDensity = spec.fogDensity;
     // The city runs a clock; the sky it produces overrides the theme's own
     // lighting from here on.
+    world.eyeHeight = 0.86;
     world.dayLength = DAY_LENGTH;
     world.timeOfDay = 0.34;
     world.advanceClock(0);
@@ -1003,7 +1015,8 @@ export class World {
       pathIndex: 0,
       speed: 0,
       bob: 0,
-      bobPhase: 0,
+      bobPhase: (hashi(Math.floor(x), Math.floor(y), 0x5a11) % 628) / 100,
+      sway: SWAYS[sprite] ?? 0,
       lightIndex: -1,
     });
   }
@@ -1080,11 +1093,14 @@ export class World {
     const cy = streetLine(info.iy, 1, this.seed);
     const dx = Math.abs(wx + 0.5 - cx);
     const dy = Math.abs(wy + 0.5 - cy);
+    // Exactly the one tile diagonally off the kerb. Matching a band instead
+    // put a signal on every tile of every corner — four times as many posts as
+    // a junction has approaches.
     return (
       dx > info.halfX &&
-      dx < info.halfX + 1.6 &&
+      dx <= info.halfX + 1 &&
       dy > info.halfY &&
-      dy < info.halfY + 1.6
+      dy <= info.halfY + 1
     );
   }
 
@@ -1144,24 +1160,32 @@ export class World {
     // Junctions are no place to appear from nothing.
     if (info.junction) return false;
 
-    const def = lookupSprite((h >>> 9) % 5 === 0 ? 'van' : 'car');
+    // Mostly cars, with enough of everything else that the traffic is not one
+    // repeated shape going past.
+    const roll = (h >>> 9) % 100;
+    const kind =
+      roll < 46 ? 'car' : roll < 62 ? 'taxi' : roll < 78 ? 'van' : roll < 91 ? 'truck' : 'bus';
+    const def = lookupSprite(kind);
     if (!def) return false;
+    // The heavy ones pull away more slowly and cruise lower.
+    const heavy = kind === 'truck' || kind === 'bus';
     this.entities.push({
       index: this.entities.length,
       def,
       kind: ACTOR_CAR,
       dirX: alongX ? dir : 0,
       dirY: alongX ? 0 : dir,
-      cruise: 5.5 + (((h >>> 12) % 100) / 100) * 3,
+      cruise: (heavy ? 4.2 : 5.5) + (((h >>> 12) % 100) / 100) * (heavy ? 1.6 : 3),
       x,
       y,
       z: t.height,
-      tint: CAR_TINTS[(h >>> 17) % CAR_TINTS.length],
+      tint: kind === 'taxi' ? null : CAR_TINTS[(h >>> 17) % CAR_TINTS.length],
       path: [],
       pathIndex: 0,
       speed: 3,
       bob: 0,
       bobPhase: 0,
+      sway: 0,
       lightIndex: -1,
     });
     return true;
@@ -1201,6 +1225,7 @@ export class World {
       speed: 1.2,
       bob: 0.04,
       bobPhase: (h % 628) / 100,
+      sway: 0,
       lightIndex: -1,
     });
     return true;
@@ -1470,6 +1495,7 @@ export class World {
           speed: 0,
           bob: 0,
           bobPhase: 0,
+          sway: 0,
           lightIndex: -1,
         });
       }
@@ -2180,6 +2206,7 @@ export class World {
           speed: 0,
           bob: def.base > 0 ? 0.05 : 0,
           bobPhase: hashInt(wx, wy, 0x3333) % 628 / 100,
+          sway: 0,
           lightIndex: -1,
         });
       }

@@ -108,11 +108,11 @@ export class Camera {
     this.updateBasis();
   }
 
-  placeAt(x: number, y: number, angle: number, groundZ = 0): void {
+  placeAt(x: number, y: number, angle: number, groundZ = 0, eye = EYE_HEIGHT): void {
     this.x = x;
     this.y = y;
     this.angle = angle;
-    this.z = groundZ + EYE_HEIGHT;
+    this.z = groundZ + eye;
     this.pitch = 0;
     this.vz = 0;
     this.grounded = true;
@@ -175,7 +175,7 @@ export class Camera {
       // cliff stops you without being modelled as a wall. Passing the feet
       // height means that while airborne you clear whatever you are above —
       // jumping onto a ledge works, and walking into its face still does not.
-      const feet = this.z - EYE_HEIGHT;
+      const feet = this.z - world.eyeHeight;
       if (world.canStep(this.x, this.y, this.x + mx, this.y, RADIUS, feet)) this.x += mx;
       if (world.canStep(this.x, this.y, this.x, this.y + my, RADIUS, feet)) this.y += my;
     }
@@ -223,7 +223,7 @@ export class Camera {
         this.vz = JUMP_SPEED;
         this.grounded = false;
         this.z += this.vz * dt;
-      } else if (this.z - EYE_HEIGHT - groundZ > FALL_THRESHOLD) {
+      } else if (this.z - world.eyeHeight - groundZ > FALL_THRESHOLD) {
         // Walked off a ledge.
         this.grounded = false;
         this.vz = 0;

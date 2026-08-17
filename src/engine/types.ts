@@ -214,5 +214,11 @@ export interface Entity {
   /** Vertical bob, purely cosmetic, in tiles. */
   bob: number;
   bobPhase: number;
+  /**
+   * Horizontal lean, in tiles, applied as a shear so the top of the sprite
+   * moves and its base does not. Trees that slide bodily sideways read as
+   * sliding; the pivot at the foot is what makes it look like wind.
+   */
+  sway: number;
   lightIndex: number;
 }
