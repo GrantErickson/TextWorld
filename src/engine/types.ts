@@ -26,6 +26,14 @@ export interface Material {
   /** Self-illumination, added on top of scene lighting. */
   emissive: number;
   /**
+   * Extra self-illumination that only appears as it gets dark, scaled by the
+   * world's `windowGlow`. Lit windows and neon are the whole character of a
+   * city at night, and doing them with real lights would blow the light budget
+   * many times over — glow costs nothing because it never illuminates anything
+   * but itself.
+   */
+  nightGlow: number;
+  /**
    * Which glyph ramp draws this surface in `material` mode. Derived from the
    * pattern once, here, so the renderer never does a string compare per cell.
    */
@@ -73,6 +81,15 @@ export interface Tile {
   water: boolean;
   /** Material of the vertical face where this tile steps up from its neighbour. */
   side: Material | null;
+  /**
+   * Material for the *lower* part of that face, below `bandZ` — a shopfront
+   * under the storeys above it. A facade in one material from pavement to
+   * roof is what makes a building read as an extruded block rather than as
+   * something with a ground floor.
+   */
+  sideLower: Material | null;
+  /** Absolute height below which `sideLower` is used. */
+  bandZ: number;
   /** Cleared ground — road, yard, riverbed. Nothing is scattered on it. */
   bare: boolean;
   /** Index into the theme's biome list; selects what grows here. */

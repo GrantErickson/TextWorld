@@ -51,8 +51,15 @@ export function parsePattern(input: string | undefined): PatternId {
   return 'solid';
 }
 
-export function makeMaterial(id: string, color: RGB, pattern: PatternId, roughness = 0.6, emissive = 0): Material {
-  return { id, color, pattern, roughness, emissive, glyphSlot: slotForPattern(pattern) };
+export function makeMaterial(
+  id: string,
+  color: RGB,
+  pattern: PatternId,
+  roughness = 0.6,
+  emissive = 0,
+  nightGlow = 0,
+): Material {
+  return { id, color, pattern, roughness, emissive, nightGlow, glyphSlot: slotForPattern(pattern) };
 }
 
 export const DEFAULT_WALL = makeMaterial('default-wall', rgb(140, 146, 156), 'rock', 0.6);

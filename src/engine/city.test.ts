@@ -313,6 +313,62 @@ test('you can walk onto a pavement without jumping', () => {
   assert.equal(failed, 0, `${failed} of ${tried} kerbs could not be walked up`);
 });
 
+test('buildings have a ground floor distinct from the storeys above', () => {
+  // A facade in one skin from pavement to roof is what makes a building read
+  // as an extruded block. Every building gets a shopfront band, and a minority
+  // get a bright sign over it.
+  const s = makeCitySample();
+  const info = makeStreetInfo();
+  let built = 0;
+  let shopfronts = 0;
+  let signs = 0;
+  for (let y = -120; y < 120; y += 2) {
+    for (let x = -120; x < 120; x += 2) {
+      sampleCity(spec, x, y, SEED, s, info);
+      if (s.storeys <= 0) continue;
+      built++;
+      if (!s.sideLower) continue;
+      shopfronts++;
+      if (s.sideLower.nightGlow > 1) signs++;
+      // The band has to sit inside the building, below its roof.
+      assert.ok(s.bandZ < s.height, 'the shopfront band reaches above the roof');
+      assert.ok(s.bandZ > s.height - s.storeys * STOREY, 'the band starts below the pavement');
+    }
+  }
+  assert.ok(built > 0);
+  assert.equal(shopfronts, built, 'some buildings have no ground floor');
+  assert.ok(signs > 0 && signs < built * 0.6, `${signs} of ${built} lots are signed`);
+});
+
+test('windows and signs light up only as it gets dark', () => {
+  const world = World.fromCity(spec, SEED);
+  world.timeOfDay = 0.5;
+  world.advanceClock(0);
+  assert.equal(world.windowGlow, 0, 'windows should not glow at noon');
+  world.timeOfDay = 0;
+  world.advanceClock(0);
+  assert.ok(world.windowGlow > 0.9, 'windows should be lit at midnight');
+});
+
+test('the streets are busier at rush hour than at three in the morning', () => {
+  // Carrying actors across a window move has to shed them as well as keep
+  // them, or the count climbs to the evening peak and stays there all night.
+  const world = World.fromCity(spec, SEED);
+  const count = (hour: number): number => {
+    world.timeOfDay = hour / 24;
+    world.advanceClock(0);
+    world.update(1 / 60, world.spawnX, world.spawnY);
+    world.update(1 / 60, world.spawnX + 30, world.spawnY);
+    return world.entities.filter((e) => e.kind === ACTOR_CAR).length;
+  };
+  const night = count(3);
+  const morning = count(8);
+  const evening = count(18);
+  assert.ok(morning > night * 2, `rush hour ${morning} vs night ${night}`);
+  assert.ok(evening > night * 2, `evening ${evening} vs night ${night}`);
+  assert.ok(night >= 1, 'the city should not empty completely');
+});
+
 test('street lamps are dark by day and lit by night', () => {
   const world = World.fromCity(spec, SEED);
   const lamps = world.lights.filter((l) => l.lampBase > 0);

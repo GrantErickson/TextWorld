@@ -54,8 +54,12 @@ export interface CityThemeSpec {
   /** Facades are picked per building from this list. */
   facades: MapSourceMaterial[];
   roof: MapSourceMaterial;
-  /** Lit window bands, used once interiors and night exist. */
+  /** Upper storeys: carries the window glow that switches on after dark. */
   glass: MapSourceMaterial;
+  /** Ground-floor shopfronts. One is picked per lot. */
+  shopfronts: MapSourceMaterial[];
+  /** Bright signage over a shopfront, on a minority of lots. */
+  signs: MapSourceMaterial[];
   park: MapSourceMaterial;
 
   /** Ground relief. A city is nearly flat, but not perfectly. */
@@ -70,6 +74,9 @@ export interface CityThemeSpec {
 
 /** Everything the world needs about one city tile. */
 export interface CitySample extends TerrainSample {
+  /** Ground-floor face material, and the height it gives way to the facade. */
+  sideLower: Material | null;
+  bandZ: number;
   /** 0 for open ground; otherwise how many floors this building has. */
   storeys: number;
   /** True for a tile inside a building's footprint rather than on its wall. */
@@ -87,12 +94,16 @@ export function makeCitySample(): CitySample {
     side: DEFAULT_ROAD,
     biome: 0,
     bare: true,
+    sideLower: null,
+    bandZ: 0,
     storeys: 0,
     interior: false,
   };
 }
 
 interface Palette {
+  shopfronts: Material[];
+  signs: Material[];
   road: Material;
   walk: Material;
   facades: Material[];
@@ -103,13 +114,14 @@ interface Palette {
 
 const palettes = new WeakMap<CityThemeSpec, Palette>();
 
-function mat(def: MapSourceMaterial, fallback = rgb(140, 140, 140)): Material {
+function mat(def: MapSourceMaterial, fallback = rgb(140, 140, 140), nightGlow = 0): Material {
   return makeMaterial(
     'city',
     parseColor(def.color, fallback),
     parsePattern(def.pattern),
     def.roughness ?? 0.6,
     def.emissive ?? 0,
+    nightGlow,
   );
 }
 
@@ -117,9 +129,12 @@ function paletteFor(spec: CityThemeSpec): Palette {
   let p = palettes.get(spec);
   if (!p) {
     p = {
+      // Shopfronts glow a little after dark; signs glow a lot.
+      shopfronts: spec.shopfronts.map((f) => mat(f, undefined, 0.5)),
+      signs: spec.signs.map((f) => mat(f, undefined, 1.7)),
       road: mat(spec.road),
       walk: mat(spec.walk),
-      facades: spec.facades.map((f) => mat(f)),
+      facades: spec.facades.map((f) => mat(f, undefined, 0.34)),
       roof: mat(spec.roof),
       glass: mat(spec.glass),
       park: mat(spec.park),
@@ -324,6 +339,8 @@ export function sampleCity(
 
   out.storeys = 0;
   out.interior = false;
+  out.sideLower = null;
+  out.bandZ = 0;
   out.solid = false;
   out.water = false;
   out.depth = 0;
@@ -383,6 +400,13 @@ export function sampleCity(
   out.bed = out.height;
   out.surface = pal.roof;
   out.side = pal.facades[(key >>> 13) % pal.facades.length];
+
+  // The ground floor is its own thing: a shopfront, and on some lots a lit
+  // sign over it. This is what stops a street looking like extruded blocks.
+  const shopRoll = (key >>> 21) % 100;
+  out.sideLower =
+    shopRoll < 22 ? pal.signs[(key >>> 3) % pal.signs.length] : pal.shopfronts[(key >>> 5) % pal.shopfronts.length];
+  out.bandZ = base + STOREY * 0.92;
 }
 
 // ------------------------------------------------------------------- themes
@@ -405,6 +429,19 @@ const DOWNTOWN: CityThemeSpec = {
   ],
   roof: { color: '#5e6068', pattern: 'grate', roughness: 0.5 },
   glass: { color: '#6e8ea8', pattern: 'panel', roughness: 0.25 },
+  shopfronts: [
+    { color: '#8fa6b8', pattern: 'panel', roughness: 0.3 },
+    { color: '#7d8c98', pattern: 'grate', roughness: 0.35 },
+    { color: '#9b8f7e', pattern: 'panel', roughness: 0.35 },
+    { color: '#86967f', pattern: 'panel', roughness: 0.3 },
+  ],
+  signs: [
+    { color: '#ff7a5c', pattern: 'panel', roughness: 0.2 },
+    { color: '#5ad0ff', pattern: 'panel', roughness: 0.2 },
+    { color: '#ffd25c', pattern: 'panel', roughness: 0.2 },
+    { color: '#b98cff', pattern: 'panel', roughness: 0.2 },
+    { color: '#5cff9e', pattern: 'panel', roughness: 0.2 },
+  ],
   park: { color: '#5f7a52', pattern: 'noise', roughness: 0.6 },
 
   exposure: 1.5,

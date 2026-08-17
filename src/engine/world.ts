@@ -90,6 +90,17 @@ const ACTOR_CULL = 58;
 const TARGET_CARS = 26;
 const TARGET_PEOPLE = 34;
 
+/**
+ * How busy the streets are at a time of day, 0..1. Two rush hours, a steady
+ * daytime, an evening tail and a dead middle of the night.
+ */
+function trafficLevel(t: number): number {
+  const hour = ((t % 1) + 1) % 1 * 24;
+  const peak = (at: number, width: number) => Math.exp(-(((hour - at) / width) ** 2));
+  const base = hour > 6 && hour < 21 ? 0.5 : 0.12;
+  return Math.min(1, base + 0.55 * peak(8, 1.7) + 0.6 * peak(18, 2.1) + 0.2 * peak(12.5, 2.5));
+}
+
 /** Planting reads better tinted to its setting than in the sprite's own green. */
 const STREET_TREE: RGB = rgb(96, 132, 82);
 const PARK_TREE: RGB = rgb(104, 150, 84);
@@ -189,6 +200,13 @@ export class World {
    * half-tile; a city is built at human scale and wants a human viewpoint.
    */
   eyeHeight = EYE_HEIGHT;
+
+  /**
+   * How lit the windows and signs are, 0 by day to 1 after dark. Materials
+   * carry a `nightGlow` that this scales, which is how a city switches on at
+   * dusk without adding a single light.
+   */
+  windowGlow = 0;
 
   /** Directional light. Only terrain uses it; it is what shades the landform. */
   sunX = 0;
@@ -442,6 +460,7 @@ export class World {
     this.skyHorizon = s.skyHorizon;
     this.fogColor = s.fogColor;
     this.starDensity = s.stars;
+    this.windowGlow = s.lampness;
 
     // Lamps follow the same clock. Their intensity is stored on the light so
     // the renderer needs to know nothing about the time of day.
@@ -625,6 +644,8 @@ export class World {
             nz: 1,
             water: false,
             side: null,
+            sideLower: null,
+            bandZ: 0,
             bare: false,
             biome: 0,
             storeys: 0,
@@ -647,6 +668,8 @@ export class World {
             nz: 1,
             water: false,
             side: null,
+            sideLower: null,
+            bandZ: 0,
             bare: false,
             biome: 0,
             storeys: 0,
@@ -669,6 +692,8 @@ export class World {
             nz: 1,
             water: false,
             side: null,
+            sideLower: null,
+            bandZ: 0,
             bare: false,
             biome: 0,
             storeys: 0,
@@ -694,6 +719,8 @@ export class World {
             nz: 1,
             water: false,
             side: null,
+            sideLower: null,
+            bandZ: 0,
             bare: false,
             biome: 0,
             storeys: 0,
@@ -924,6 +951,8 @@ export class World {
           nz: 1,
           water: s.water,
           side: s.side,
+          sideLower: null,
+          bandZ: 0,
           bare: s.bare,
           biome: s.biome,
           storeys: s.storeys,
@@ -1112,23 +1141,42 @@ export class World {
    * lattice position that often would read as worse than an empty city.
    */
   private stockActors(px: number, py: number): void {
+    // Traffic and crowds follow the clock: two peaks either side of the
+    // working day and almost nothing in the small hours. A city with the same
+    // number of cars at 3am as at 8am reads as a diorama.
+    const busy = trafficLevel(this.timeOfDay);
+    const wantCars = Math.max(2, Math.round(TARGET_CARS * busy));
+    const wantPeople = Math.max(2, Math.round(TARGET_PEOPLE * busy));
+
+    // Carrying actors over has to be able to *shed* them as well as keep them,
+    // or the streets only ever fill up: the count reached the evening peak and
+    // stayed there all night. Furthest away goes first, so nothing vanishes
+    // from under your nose.
     const kept = this.carried;
-    for (const e of kept) {
-      e.index = this.entities.length;
-      this.entities.push(e);
-    }
+    kept.sort((a, b) => {
+      const da = (a.x - px) * (a.x - px) + (a.y - py) * (a.y - py);
+      const db = (b.x - px) * (b.x - px) + (b.y - py) * (b.y - py);
+      return da - db;
+    });
 
     let cars = 0;
     let people = 0;
     for (const e of kept) {
-      if (e.kind === ACTOR_CAR) cars++;
-      else people++;
+      if (e.kind === ACTOR_CAR) {
+        if (cars >= wantCars) continue;
+        cars++;
+      } else {
+        if (people >= wantPeople) continue;
+        people++;
+      }
+      e.index = this.entities.length;
+      this.entities.push(e);
     }
 
-    for (let attempt = 0; attempt < 400 && cars < TARGET_CARS; attempt++) {
+    for (let attempt = 0; attempt < 400 && cars < wantCars; attempt++) {
       if (this.spawnCar(px, py, attempt)) cars++;
     }
-    for (let attempt = 0; attempt < 400 && people < TARGET_PEOPLE; attempt++) {
+    for (let attempt = 0; attempt < 400 && people < wantPeople; attempt++) {
       if (this.spawnPerson(px, py, attempt)) people++;
     }
   }
@@ -1393,6 +1441,8 @@ export class World {
           nz: 1,
           water: s.water,
           side: s.side,
+          sideLower: null,
+          bandZ: 0,
           bare: s.bare,
           biome: s.biome,
           // Landscape worlds have no buildings with insides.
@@ -2000,6 +2050,8 @@ export class World {
         nz: 1,
         water: false,
         side: null,
+        sideLower: null,
+        bandZ: 0,
         bare: false,
         biome: 0,
         storeys: 0,

@@ -493,7 +493,8 @@ export class Renderer {
           if (y1 >= y0) {
             const wx = cam.x + rdx * dNear;
             const wy = cam.y + rdy * dNear;
-            const mat = tile.side ?? tile.floor;
+            const upper = tile.side ?? tile.floor;
+            const lower = tile.sideLower;
             const nx = side === 0 ? -stepX : 0;
             const ny = side === 0 ? 0 : -stepY;
             const u = side === 0 ? wy : wx;
@@ -502,11 +503,17 @@ export class Renderer {
 
             for (let y = y0; y <= y1; y++) {
               const zAt = camZ - ((y + 0.5 - horizon) * dNear) / projY;
+              // The ground floor is its own material: a facade in one skin from
+              // pavement to roof reads as an extruded block, not a building.
+              const mat = lower !== null && zAt < tile.bandZ ? lower : upper;
+              // Window and sign glow rises as the light goes, so a street lights
+              // up at dusk without spending anything from the light budget.
+              const glow = mat.emissive + mat.nightGlow * world.windowGlow;
               const tex = sampleTexture(mat, u, zAt);
               surfaceLight(world, wx, wy, zAt, nx, ny, acc);
-              let r = (mat.color.r / 255) * ((acc.r + sunR * sun) * tex + mat.emissive);
-              let g = (mat.color.g / 255) * ((acc.g + sunG * sun) * tex + mat.emissive);
-              let b = (mat.color.b / 255) * ((acc.b + sunB * sun) * tex + mat.emissive);
+              let r = (mat.color.r / 255) * ((acc.r + sunR * sun) * tex + glow);
+              let g = (mat.color.g / 255) * ((acc.g + sunG * sun) * tex + glow);
+              let b = (mat.color.b / 255) * ((acc.b + sunB * sun) * tex + glow);
               if (fogF > 0) {
                 r += (fogR - r) * fogF;
                 g += (fogG - g) * fogF;
