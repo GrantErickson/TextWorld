@@ -18,6 +18,7 @@ import { Display } from './ui/display.ts';
 import { Input } from './ui/input.ts';
 import { Minimap } from './ui/minimap.ts';
 import { PRESETS, presetById } from './maps.ts';
+import { clockString } from './engine/daynight.ts';
 
 const STORAGE_SOURCE = 'textworld.source';
 const STORAGE_PRESET = 'textworld.preset';
@@ -365,6 +366,12 @@ function frame(now: number): void {
     camera.flying = !camera.flying;
     camera.vz = 0;
   }
+  // Scrub the clock an hour at a time; hold shift to go back. Only worlds
+  // running a day/night cycle have a clock to move.
+  if (input.wasTapped('KeyT') && world.dayLength > 0) {
+    world.advanceClock((move.run ? -1 : 1) / 24);
+    needsRedraw = true;
+  }
   if (input.wasTapped('KeyG')) {
     const next = (GLYPH_MODES.indexOf(glyphModeEl.value as GlyphMode) + 1) % GLYPH_MODES.length;
     setGlyphs(GLYPH_MODES[next]);
@@ -434,6 +441,14 @@ function updateStats(): void {
   const depth = world.waterDepthAt(camera.x, camera.y);
   stats.set('water', depth > 0 ? `${depth.toFixed(2)} deep` : '—');
   stats.set('exposure', `${world.exposure.toFixed(1)} · ×${world.contrast.toFixed(2)} contrast`);
+
+  if (world.dayLength > 0) {
+    stats.set(
+      'clock',
+      `${clockString(world.timeOfDay)}${world.sky.lampness > 0.02 ? ' · lamps' : ''}`,
+      world.sky.altitude > 0 ? 'good' : '',
+    );
+  }
 
   if (world.infinite) {
     const g = world.gen;

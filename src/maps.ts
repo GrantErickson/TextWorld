@@ -231,7 +231,14 @@ const ENDLESS_BADLANDS = `{
 }
 `;
 
+const ENDLESS_CITY = `{
+  "name": "Endless City",
+  "generate": { "theme": "city", "seed": 7 }
+}
+`;
+
 export const PRESETS: Preset[] = [
+  { id: 'gen-city', label: '∞ City', source: ENDLESS_CITY },
   { id: 'gen-wilds', label: '∞ Wilds', source: ENDLESS_WILDS },
   { id: 'gen-badlands', label: '∞ Badlands', source: ENDLESS_BADLANDS },
   { id: 'gen-catacombs', label: '∞ Catacombs', source: ENDLESS_CATACOMBS },

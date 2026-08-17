@@ -99,6 +99,77 @@ Variants need not match their level's coverage exactly: `write` solves the
 colour against the coverage of the glyph it actually chose, so a light variant
 simply comes out with a brighter foreground.
 
+## The city (in progress)
+
+A third generator kind, and the first world that is not expressible as one
+surface per tile. The goal is that it feels like a real city: a street grid you
+can lose your bearings in, a skyline, traffic that obeys its lights, people on
+the sidewalks, and a day that turns to night with the lamps coming on.
+
+### Why the column model has to change
+
+Everything before this had exactly one solid surface per tile, which is what
+lets the terrain renderer march a column with a single y-buffer that only ever
+moves up the screen. A building you can walk into breaks that outright: the
+tile under your feet on the third floor is also the ceiling of the second, and
+the renderer has never drawn an underside in its life.
+
+So a city column is a short **list of solid spans** rather than a height:
+
+    street        ground .. ground              (one span, as before)
+    exterior wall ground .. roof                (one tall span)
+    interior      ground, then a thin slab at
+                  each storey, and the roof     (several spans, air between)
+
+Spans are *derived* from a few per-tile fields rather than stored as a list —
+storey count, whether the tile is perimeter or interior, where its openings
+are — so the tile stays small and the generator stays a pure function.
+
+### Why the y-buffer becomes a coverage mask
+
+With ceilings in play, surfaces no longer converge on the horizon from one
+side: floors paint upward toward it and ceilings paint downward, and a slab
+seen edge-on from outside splits the remaining view into two gaps rather than
+one. A single `yBuf` cannot express that.
+
+The generalisation is per column: a **done mask** over rows plus a count of
+rows still unresolved. Marching front to back, each surface fills only the rows
+not yet taken; the column finishes early when the count hits zero. The current
+y-buffer is exactly the degenerate case of this where the unresolved rows are
+always one contiguous run, so the existing behaviour is preserved rather than
+replaced.
+
+Per column, each tile can contribute:
+
+- the **top** of each span below the eye (a floor, or the street, or a roof)
+- the **underside** of each span above the eye (a ceiling)
+- the **vertical face** of a span at the tile boundary (a wall)
+
+### Order of work
+
+1. **Done.** City layout: streets, sidewalks, blocks, lots, a skyline of varied
+   storeys. `city.ts`.
+2. **Done.** Day and night: `daynight.ts`. One value, `world.timeOfDay`, drives
+   the sun's position and colour, ambient, sky, fog, stars and whether the
+   lamps are lit. `T` scrubs an hour, shift-`T` back.
+3. **Not started.** Traffic and crowds: cars in lanes obeying stoplights,
+   people on sidewalks.
+4. **Not started.** Seamless interiors: the span renderer described above,
+   floors, stairs, doors and windows. `Tile.storeys` and `Tile.interior` are
+   already generated and carried through, so the data this needs exists.
+
+Steps 1-2 fit the existing renderer, so the city is walkable and lit before the
+largest and riskiest piece starts.
+
+### Two things step 2 added that the rest of the engine now depends on
+
+- **Lights have a `z`.** They used to sit at a fixed `LIGHT_HEIGHT`, which is
+  fine for a torch on a dungeon wall and wrong for a lamp on a post over a
+  pavement. `surfaceLight` now takes the vertical term from each light.
+- **Lights have a `lampBase`.** A light that answers to the clock stores its
+  daylit intensity there, and `advanceClock` scales it by how dark it is. The
+  renderer still knows nothing about the time of day.
+
 ## Outdoor worlds (heightmap terrain)
 
 Outdoor worlds are the second generator kind. Where the dungeon themes solve

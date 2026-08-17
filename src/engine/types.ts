@@ -77,6 +77,17 @@ export interface Tile {
   bare: boolean;
   /** Index into the theme's biome list; selects what grows here. */
   biome: number;
+
+  // ---------------------------------------------------- city worlds only
+  /**
+   * Storeys in the building occupying this tile, or 0 for open ground. Held
+   * per tile rather than as a list of spans: a building column is regular —
+   * a slab every STOREY up to the roof — so the spans can be derived from
+   * this and the tile stays small enough to rebuild a whole window cheaply.
+   */
+  storeys: number;
+  /** Inside a building's footprint rather than on its wall. */
+  interior: boolean;
 }
 
 export interface Door {
@@ -103,6 +114,12 @@ export interface Door {
 export interface Light {
   x: number;
   y: number;
+  /**
+   * Height above the world's zero, in tiles. A lamp on a post and a candle on
+   * a floor pool very differently, and outdoors the difference is the whole
+   * character of the light.
+   */
+  z: number;
   radius: number;
   color: RGB;
   intensity: number;
@@ -125,6 +142,13 @@ export interface Light {
   /** World position the visibility field was last baked from. */
   visX: number;
   visY: number;
+  /**
+   * Full-strength intensity for a light that answers to the clock — a street
+   * lamp or a lit window. 0 for lights that burn regardless. Keeping the
+   * daylit value here means the time of day can dim it without the renderer
+   * knowing anything about time.
+   */
+  lampBase: number;
   /** Set for lights carried by an entity. */
   ownerEntity: number;
   cooldown: number;

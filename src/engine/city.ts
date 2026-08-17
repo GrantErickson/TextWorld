@@ -1,0 +1,355 @@
+/**
+ * City generation.
+ *
+ * Like the wilds, every tile is a pure function of its absolute coordinates,
+ * so the city is endless without being remembered. Unlike the wilds, it is not
+ * a landscape with things scattered on it — it is a *plan*, and the order the
+ * plan is read in matters:
+ *
+ *   streets -> sidewalks -> blocks -> lots -> buildings
+ *
+ * Each layer only fills what the one above it left over, which is what keeps
+ * frontages square to their street and stops a building from straddling one.
+ *
+ * The streets themselves are the part most easily got wrong. It is tempting to
+ * lay them out as `x % BLOCK < WIDTH`, which is O(1) and gives a perfectly
+ * uniform grid that reads as graph paper rather than as a city. Instead each
+ * street line is placed at its nominal spacing plus a hash-derived jitter.
+ * Because the jitter depends only on the line's *index*, the line stays
+ * straight and unbroken from one edge of the world to the other — blocks vary
+ * in size while streets still run all the way across, which is what real
+ * gridded cities look like.
+ */
+
+import type { Material, RGB } from './types.ts';
+import { makeMaterial, parseColor, parsePattern, rgb } from './materials.ts';
+import type { MapSourceMaterial } from './mapFormat.ts';
+import { fbm2, hashi, norm01 } from './noise.ts';
+import type { TerrainSample } from './terrain.ts';
+
+/** Height of one storey, in tiles. */
+export const STOREY = 3.4;
+
+/** Nominal distance between street centre lines. */
+const BLOCK = 34;
+/** How far a street line may wander from its nominal position. */
+const JITTER = 6;
+/** Half-width of an ordinary street's carriageway. */
+const ROAD_HALF = 2;
+/** Half-width of an avenue: every Nth line is a major road. */
+const AVENUE_HALF = 4;
+const AVENUE_EVERY = 4;
+/** Sidewalk width, outside the carriageway. */
+const WALK = 2;
+/** Lots are subdivided to roughly this size before a building goes up. */
+const LOT = 11;
+
+export interface CityThemeSpec {
+  id: string;
+  label: string;
+  kind: 'city';
+
+  road: MapSourceMaterial;
+  walk: MapSourceMaterial;
+  /** Facades are picked per building from this list. */
+  facades: MapSourceMaterial[];
+  roof: MapSourceMaterial;
+  /** Lit window bands, used once interiors and night exist. */
+  glass: MapSourceMaterial;
+  park: MapSourceMaterial;
+
+  /** Ground relief. A city is nearly flat, but not perfectly. */
+  amplitude: number;
+  /** Tallest a building may get, in storeys, at the centre of downtown. */
+  maxStoreys: number;
+
+  exposure: number;
+  fogColor: string;
+  fogDensity: number;
+}
+
+/** Everything the world needs about one city tile. */
+export interface CitySample extends TerrainSample {
+  /** 0 for open ground; otherwise how many floors this building has. */
+  storeys: number;
+  /** True for a tile inside a building's footprint rather than on its wall. */
+  interior: boolean;
+}
+
+export function makeCitySample(): CitySample {
+  return {
+    height: 0,
+    bed: 0,
+    depth: 0,
+    solid: false,
+    water: false,
+    surface: DEFAULT_ROAD,
+    side: DEFAULT_ROAD,
+    biome: 0,
+    bare: true,
+    storeys: 0,
+    interior: false,
+  };
+}
+
+interface Palette {
+  road: Material;
+  walk: Material;
+  facades: Material[];
+  roof: Material;
+  glass: Material;
+  park: Material;
+}
+
+const palettes = new WeakMap<CityThemeSpec, Palette>();
+
+function mat(def: MapSourceMaterial, fallback = rgb(140, 140, 140)): Material {
+  return makeMaterial(
+    'city',
+    parseColor(def.color, fallback),
+    parsePattern(def.pattern),
+    def.roughness ?? 0.6,
+    def.emissive ?? 0,
+  );
+}
+
+function paletteFor(spec: CityThemeSpec): Palette {
+  let p = palettes.get(spec);
+  if (!p) {
+    p = {
+      road: mat(spec.road),
+      walk: mat(spec.walk),
+      facades: spec.facades.map((f) => mat(f)),
+      roof: mat(spec.roof),
+      glass: mat(spec.glass),
+      park: mat(spec.park),
+    };
+    palettes.set(spec, p);
+  }
+  return p;
+}
+
+const DEFAULT_ROAD = makeMaterial('city', rgb(60, 60, 66), 'noise', 0.35);
+
+// ------------------------------------------------------------------ streets
+
+/** Whether the street line with this index is a major road. */
+function isAvenue(i: number): boolean {
+  return ((i % AVENUE_EVERY) + AVENUE_EVERY) % AVENUE_EVERY === 0;
+}
+
+function halfWidth(i: number): number {
+  return isAvenue(i) ? AVENUE_HALF : ROAD_HALF;
+}
+
+/** Centre line of street `i`, jittered but straight for its whole length. */
+export function streetLine(i: number, axis: number, seed: number): number {
+  return i * BLOCK + (hashi(i, axis * 7919, seed) % (JITTER * 2 + 1)) - JITTER;
+}
+
+/**
+ * The nearest street line to `v`, and how far away it is. Only the three
+ * candidate indices around `v` can possibly be nearest, since the jitter is
+ * bounded well below the spacing.
+ */
+function nearestStreet(v: number, axis: number, seed: number): { index: number; dist: number } {
+  const guess = Math.round(v / BLOCK);
+  let index = guess;
+  let dist = Infinity;
+  for (let k = guess - 1; k <= guess + 1; k++) {
+    const d = Math.abs(v - streetLine(k, axis, seed));
+    if (d < dist) {
+      dist = d;
+      index = k;
+    }
+  }
+  return { index, dist };
+}
+
+export interface StreetInfo {
+  /** True on the carriageway itself. */
+  road: boolean;
+  /** True on the pavement beside it. */
+  walk: boolean;
+  /** True where two carriageways cross. */
+  junction: boolean;
+  /** Distance from the nearest line on each axis, and that line's index. */
+  dx: number;
+  dy: number;
+  ix: number;
+  iy: number;
+  halfX: number;
+  halfY: number;
+}
+
+export function streetAt(wx: number, wy: number, seed: number, out: StreetInfo): void {
+  const sx = nearestStreet(wx + 0.5, 0, seed);
+  const sy = nearestStreet(wy + 0.5, 1, seed);
+  const hx = halfWidth(sx.index);
+  const hy = halfWidth(sy.index);
+
+  const onRoadX = sx.dist <= hx;
+  const onRoadY = sy.dist <= hy;
+
+  out.dx = sx.dist;
+  out.dy = sy.dist;
+  out.ix = sx.index;
+  out.iy = sy.index;
+  out.halfX = hx;
+  out.halfY = hy;
+  out.road = onRoadX || onRoadY;
+  out.junction = onRoadX && onRoadY;
+  out.walk = !out.road && (sx.dist <= hx + WALK || sy.dist <= hy + WALK);
+}
+
+export function makeStreetInfo(): StreetInfo {
+  return { road: false, walk: false, junction: false, dx: 0, dy: 0, ix: 0, iy: 0, halfX: 0, halfY: 0 };
+}
+
+// -------------------------------------------------------------------- lots
+
+/**
+ * How built-up this part of town is, 0..1. Drives building height, so towers
+ * cluster into a downtown and thin out into low-rise neighbourhoods instead of
+ * every block being the same.
+ */
+export function density(wx: number, wy: number, seed: number): number {
+  return norm01(fbm2(wx * 0.0032, wy * 0.0032, seed + 4801, 3));
+}
+
+/** The lot a block-interior tile belongs to, as a stable integer pair. */
+function lotOf(wx: number, wy: number, seed: number, s: StreetInfo): [number, number] {
+  // Measured from the block's own edge rather than from the world origin, so
+  // lots line up with the frontage instead of drifting across it.
+  const edgeX = streetLine(s.ix, 0, seed) + (wx + 0.5 > streetLine(s.ix, 0, seed) ? s.halfX + WALK : -(s.halfX + WALK));
+  const edgeY = streetLine(s.iy, 1, seed) + (wy + 0.5 > streetLine(s.iy, 1, seed) ? s.halfY + WALK : -(s.halfY + WALK));
+  return [Math.floor((wx + 0.5 - edgeX) / LOT), Math.floor((wy + 0.5 - edgeY) / LOT)];
+}
+
+/** Ground level. Nearly flat — enough to keep the skyline from being a ruler. */
+export function cityGround(spec: CityThemeSpec, wx: number, wy: number, seed: number): number {
+  return (norm01(fbm2(wx * 0.0055, wy * 0.0055, seed + 61, 3)) - 0.5) * spec.amplitude;
+}
+
+// ------------------------------------------------------------------ sample
+
+export function sampleCity(
+  spec: CityThemeSpec,
+  wx: number,
+  wy: number,
+  seed: number,
+  out: CitySample,
+  street: StreetInfo,
+): void {
+  const pal = paletteFor(spec);
+  streetAt(wx, wy, seed, street);
+
+  const ground = cityGround(spec, wx, wy, seed);
+
+  out.storeys = 0;
+  out.interior = false;
+  out.solid = false;
+  out.water = false;
+  out.depth = 0;
+  out.bare = true;
+  out.biome = 0;
+  out.side = pal.walk;
+
+  if (street.road) {
+    out.height = ground;
+    out.bed = ground;
+    out.surface = pal.road;
+    out.side = pal.road;
+    return;
+  }
+
+  if (street.walk) {
+    // The kerb: a step up from the carriageway, which is most of what makes a
+    // street read as a street rather than as a corridor.
+    out.height = ground + 0.18;
+    out.bed = out.height;
+    out.surface = pal.walk;
+    return;
+  }
+
+  // Inside a block. Split it into lots and put something on this one.
+  const [lx, ly] = lotOf(wx, wy, seed, street);
+  const key = hashi(lx * 31 + street.ix * 7, ly * 17 + street.iy * 13, seed + 555);
+
+  const base = ground + 0.18;
+  const dens = density(wx, wy, seed);
+
+  // Some lots are left open. A city with no gaps in it feels like a maze.
+  if (key % 100 < 8) {
+    out.height = base;
+    out.bed = base;
+    out.surface = pal.park;
+    out.bare = false;
+    return;
+  }
+
+  // Height is mostly the luck of the lot, nudged by how built-up the district
+  // is. Driving it from the district field alone looked reasonable in the
+  // formula and produced a city of uniform height, because that field barely
+  // varies across the few hundred tiles you can actually see: neighbouring
+  // lots have to differ from each other, or there is no skyline.
+  const roll = ((key >>> 7) % 1000) / 1000;
+  const tallness = 0.3 + 0.7 * dens;
+  const storeys = 1 + Math.floor(Math.pow(roll, 1.7) * tallness * spec.maxStoreys);
+
+  // Lots are built to their boundaries, sharing party walls the way a real
+  // block does. The variation between neighbours is what reads as separate
+  // buildings, not gaps between them.
+  out.storeys = storeys;
+  out.solid = true;
+  out.interior = false;
+  out.height = base + storeys * STOREY;
+  out.bed = out.height;
+  out.surface = pal.roof;
+  out.side = pal.facades[(key >>> 13) % pal.facades.length];
+}
+
+// ------------------------------------------------------------------- themes
+
+const DOWNTOWN: CityThemeSpec = {
+  id: 'city',
+  label: 'Endless City',
+  kind: 'city',
+  amplitude: 3.5,
+  maxStoreys: 14,
+
+  road: { color: '#4a4a52', pattern: 'noise', roughness: 0.3 },
+  walk: { color: '#8e8e94', pattern: 'tile', roughness: 0.4 },
+  facades: [
+    { color: '#9a8f80', pattern: 'brick', roughness: 0.7 },
+    { color: '#8a8f98', pattern: 'panel', roughness: 0.55 },
+    { color: '#a89477', pattern: 'brick', roughness: 0.75 },
+    { color: '#7f858e', pattern: 'panel', roughness: 0.5 },
+    { color: '#9c8a86', pattern: 'brick', roughness: 0.7 },
+  ],
+  roof: { color: '#5e6068', pattern: 'grate', roughness: 0.5 },
+  glass: { color: '#6e8ea8', pattern: 'panel', roughness: 0.25 },
+  park: { color: '#5f7a52', pattern: 'noise', roughness: 0.6 },
+
+  exposure: 1.5,
+  fogColor: '#9fb0c2',
+  fogDensity: 0.014,
+};
+
+export const CITY_THEMES: Record<string, CityThemeSpec> = {
+  city: DOWNTOWN,
+};
+
+export function lookupCityTheme(id: string | undefined): CityThemeSpec | null {
+  if (!id) return null;
+  return CITY_THEMES[id] ?? null;
+}
+
+export function cityThemeIds(): string[] {
+  return Object.keys(CITY_THEMES);
+}
+
+/** Placeholder so the module has a colour helper alongside the others. */
+export function cityTint(a: RGB): RGB {
+  return a;
+}

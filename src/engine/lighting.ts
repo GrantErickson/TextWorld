@@ -171,10 +171,13 @@ export function surfaceLight(
   out.b = (world.ambientColor.b / 255) * amb;
 
   const horizontal = nx === 0 && ny === 0;
-  const dz = LIGHT_HEIGHT - z;
-  const dz2 = dz * dz;
 
   for (const light of world.lights) {
+    // Each light carries its own height now — a lamp on a post pools very
+    // differently from a candle on the floor — so the vertical term moves
+    // inside the loop.
+    const dz = light.z - z;
+    const dz2 = dz * dz;
     const dx = light.x - x;
     const dy = light.y - y;
     const dFlat2 = dx * dx + dy * dy;

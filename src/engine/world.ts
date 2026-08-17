@@ -18,6 +18,18 @@ import { WfcModel, solveRegion } from './wfc.ts';
 import type { TerrainSample, TerrainThemeSpec } from './terrain.ts';
 import { lookupTerrainTheme, makeSample, sampleTerrain, terrainThemeIds } from './terrain.ts';
 import { hashi } from './noise.ts';
+import { LIGHT_HEIGHT } from './lighting.ts';
+import type { SkyState } from './daynight.ts';
+import { DAY_LENGTH, makeSkyState, skyAt } from './daynight.ts';
+import type { CitySample, CityThemeSpec, StreetInfo } from './city.ts';
+import {
+  cityThemeIds,
+  lookupCityTheme,
+  makeCitySample,
+  makeStreetInfo,
+  sampleCity,
+  streetAt,
+} from './city.ts';
 
 /**
  * Streaming parameters.
@@ -147,6 +159,15 @@ export class World {
   /** Seconds since this world was built; drives flicker, bob and doors. */
   time = 0;
 
+  /**
+   * Time of day, 0..1, with 0 at midnight. Seconds per cycle; 0 disables the
+   * clock entirely, which is how every world that is not the city keeps the
+   * fixed lighting its theme asked for.
+   */
+  timeOfDay = 0.35;
+  dayLength = 0;
+  readonly sky: SkyState = makeSkyState();
+
   // --------------------------------------------------- generation state
   private theme: Theme | null = null;
   private model: WfcModel | null = null;
@@ -174,6 +195,9 @@ export class World {
   private openChar = -1;
   private lanternIndex = -1;
   private terrainSpec: TerrainThemeSpec | null = null;
+  private citySpec: CityThemeSpec | null = null;
+  private readonly citySample: CitySample = makeCitySample();
+  private readonly streetInfo: StreetInfo = makeStreetInfo();
   private readonly sample: TerrainSample = makeSample();
 
   private constructor(width: number, height: number, tiles: Tile[]) {
@@ -333,12 +357,51 @@ export class World {
 
   update(dt: number, playerX: number, playerY: number): void {
     this.time += dt;
+    if (this.dayLength > 0) this.advanceClock(dt / this.dayLength);
     if (this.infinite) {
       this.stream(playerX, playerY);
       this.moveLantern(dt, playerX, playerY);
     }
     this.updateDoors(dt, playerX, playerY);
     this.updateEntities(dt);
+  }
+
+  /**
+   * Move the clock and push the resulting sky onto the world.
+   *
+   * The sky's own fields are the authority while a clock is running: sun,
+   * ambient, fog and stars are all recomputed from the time rather than from
+   * the theme, which is what lets one number carry dawn through to night.
+   */
+  advanceClock(delta: number): void {
+    this.timeOfDay = (this.timeOfDay + delta) % 1;
+    if (this.timeOfDay < 0) this.timeOfDay += 1;
+    skyAt(this.timeOfDay, this.sky);
+
+    const s = this.sky;
+    this.sunX = s.sunX;
+    this.sunY = s.sunY;
+    this.sunZ = s.sunZ;
+    this.sunColor = s.sunColor;
+    // Below the horizon the sun contributes nothing but its colour.
+    this.sunIntensity = s.altitude > 0 ? s.sunIntensity : s.sunIntensity * Math.max(0, 1 + s.altitude * 6);
+    this.ambient = s.ambient;
+    this.ambientColor = s.ambientColor;
+    this.skyTop = s.skyTop;
+    this.skyHorizon = s.skyHorizon;
+    this.fogColor = s.fogColor;
+    this.starDensity = s.stars;
+
+    // Lamps follow the same clock. Their intensity is stored on the light so
+    // the renderer needs to know nothing about the time of day.
+    for (const l of this.lights) {
+      if (l.lampBase <= 0) continue;
+      const want = l.lampBase * s.lampness;
+      if (want !== l.intensity) {
+        l.intensity = want;
+        l.visDirty = true;
+      }
+    }
   }
 
   /**
@@ -352,6 +415,9 @@ export class World {
     if (!l) return;
     l.x = playerX;
     l.y = playerY;
+    // Carried at about waist height above whatever is underfoot, so it does
+    // not end up buried when the ground rises.
+    l.z = this.groundAt(playerX, playerY) + 0.6;
     l.cooldown -= dt;
     const drift = Math.hypot(l.x - l.visX, l.y - l.visY);
     if (drift > LIGHT_REBAKE_DIST && l.cooldown <= 0) {
@@ -427,14 +493,19 @@ export class World {
     if (src.generate) {
       const theme = lookupTheme(src.generate.theme);
       const outdoor = theme ? null : lookupTerrainTheme(src.generate.theme);
-      if (!theme && !outdoor) {
+      const city = theme || outdoor ? null : lookupCityTheme(src.generate.theme);
+      if (!theme && !outdoor && !city) {
         throw new MapError(
           `Unknown theme "${src.generate.theme}". Available: ` +
-            `${[...themeIds(), ...terrainThemeIds()].join(', ')}.`,
+            `${[...themeIds(), ...terrainThemeIds(), ...cityThemeIds()].join(', ')}.`,
         );
       }
       const seed = src.generate.seed ?? 1;
-      const world = theme ? World.fromTheme(theme, seed) : World.fromTerrain(outdoor!, seed);
+      const world = theme
+        ? World.fromTheme(theme, seed)
+        : outdoor
+          ? World.fromTerrain(outdoor, seed)
+          : World.fromCity(city!, seed);
 
       // The theme sets the look; anything stated in the source wins over it.
       if (src.name !== undefined) world.name = src.name;
@@ -505,6 +576,8 @@ export class World {
             side: null,
             bare: false,
             biome: 0,
+            storeys: 0,
+            interior: false,
           };
         } else if (entry?.wall) {
           tiles[i] = {
@@ -525,6 +598,8 @@ export class World {
             side: null,
             bare: false,
             biome: 0,
+            storeys: 0,
+            interior: false,
           };
         } else if (entry) {
           tiles[i] = {
@@ -545,6 +620,8 @@ export class World {
             side: null,
             bare: false,
             biome: 0,
+            storeys: 0,
+            interior: false,
           };
         } else {
           // Unlisted characters: whitespace and '.' are open floor, anything
@@ -568,6 +645,8 @@ export class World {
             side: null,
             bare: false,
             biome: 0,
+            storeys: 0,
+            interior: false,
           };
         }
       }
@@ -729,8 +808,169 @@ export class World {
     return world;
   }
 
+  /** Build a streamed city. Shares the window, streaming and lighting. */
+  static fromCity(spec: CityThemeSpec, seed: number): World {
+    const tiles: Tile[] = new Array(WINDOW * WINDOW);
+    const world = new World(WINDOW, WINDOW, tiles);
+
+    world.infinite = true;
+    world.terrain = true;
+    world.citySpec = spec;
+    world.seed = seed >>> 0;
+    world.name = spec.label;
+    world.exposure = spec.exposure;
+    world.fogDensity = spec.fogDensity;
+    // The city runs a clock; the sky it produces overrides the theme's own
+    // lighting from here on.
+    world.dayLength = DAY_LENGTH;
+    world.timeOfDay = 0.34;
+    world.advanceClock(0);
+
+    world.originX = -(WINDOW >> 1);
+    world.originY = -(WINDOW >> 1);
+    world.buildTerrain();
+
+    // Start on a pavement rather than in the middle of the carriageway.
+    const spot = world.findWalkNear(0, 0) ?? world.findOpenNear(0, 0) ?? [0, 0];
+    world.spawnX = spot[0] + 0.5;
+    world.spawnY = spot[1] + 0.5;
+    world.spawnAngle = world.openestAngle(world.spawnX, world.spawnY);
+    world.populateTerrain(world.spawnX, world.spawnY);
+
+    return world;
+  }
+
+  private buildCity(): void {
+    const spec = this.citySpec;
+    if (!spec) return;
+    const s = this.citySample;
+    const street = this.streetInfo;
+    const w = this.width;
+    const h = this.height;
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        sampleCity(spec, this.originX + x, this.originY + y, this.seed, s, street);
+        this.tiles[y * w + x] = {
+          type: s.solid ? TILE_WALL : TILE_EMPTY,
+          wall: s.solid ? s.side : null,
+          floor: s.surface,
+          ceiling: s.surface,
+          sky: true,
+          doorId: -1,
+          ao: 1,
+          height: s.height,
+          bed: s.bed,
+          depth: s.depth,
+          nx: 0,
+          ny: 0,
+          nz: 1,
+          water: s.water,
+          side: s.side,
+          bare: s.bare,
+          biome: s.biome,
+          storeys: s.storeys,
+          interior: s.interior,
+        };
+      }
+    }
+
+    this.bakeNormals();
+  }
+
+  /**
+   * Populate the city. Street furniture, traffic and crowds land here; for now
+   * it is only the carried light, so the streets are legible after dark.
+   */
+  private populateCity(px: number, py: number): void {
+    const spec = this.citySpec;
+    if (!spec) return;
+    this.lights.length = 0;
+    this.entities.length = 0;
+
+    // A very dim carried light. In a lit city it should be almost nothing —
+    // enough that an unlit alley is not a void, not enough to read as a torch.
+    this.lights.push(makeLight(px, py, 4, '#ffe0c0', 0.16, 0, 0, -1));
+    this.lanternIndex = 0;
+
+    // Street lamps, on a lattice, snapped to whatever pavement is nearest the
+    // sampled point. Their intensity is set by the clock, not here.
+    const spacing = 13;
+    const bx0 = Math.floor((px - LIGHT_CULL) / spacing);
+    const bx1 = Math.floor((px + LIGHT_CULL) / spacing);
+    const by0 = Math.floor((py - LIGHT_CULL) / spacing);
+    const by1 = Math.floor((py + LIGHT_CULL) / spacing);
+
+    for (let by = by0; by <= by1 && this.lights.length < 42; by++) {
+      for (let bx = bx0; bx <= bx1 && this.lights.length < 42; bx++) {
+        const h = hashi(bx, by, this.seed ^ 0x5a1d);
+        const spot = this.nearestPavement(bx * spacing + (h % spacing), by * spacing + ((h >>> 9) % spacing), 4);
+        if (!spot) continue;
+        const lx = spot[0] + 0.5;
+        const ly = spot[1] + 0.5;
+        const dx = lx - px;
+        const dy = ly - py;
+        if (dx * dx + dy * dy > LIGHT_CULL * LIGHT_CULL) continue;
+        const t = this.tileAt(spot[0], spot[1]);
+        const light = makeLight(lx, ly, 9, '#ffd39a', 0, 0, hashi(spot[0], spot[1], 0x33) & 0xffff, -1);
+        // Lamps hang above head height, so their pool spreads on the pavement.
+        light.z = (t ? t.height : 0) + 2.6;
+        light.lampBase = 2.2;
+        this.lights.push(light);
+      }
+    }
+
+    this.advanceClock(0);
+  }
+
+  /** Search outward for a pavement tile, up to `reach` tiles away. */
+  private nearestPavement(wx: number, wy: number, reach: number): [number, number] | null {
+    for (let r = 0; r <= reach; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const x = wx + dx;
+          const y = wy + dy;
+          const t = this.tileAt(x, y);
+          if (!t || t.type !== TILE_EMPTY) continue;
+          if (this.isPavement(x, y)) return [x, y];
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Nearest pavement tile: where a person would be standing. */
+  private findWalkNear(wx: number, wy: number): [number, number] | null {
+    for (let r = 0; r < 48; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const x = wx + dx;
+          const y = wy + dy;
+          const t = this.tileAt(x, y);
+          if (!t || t.type !== TILE_EMPTY || t.storeys > 0) continue;
+          if (!this.isPavement(x, y)) continue;
+          if (this.canOccupy(x + 0.5, y + 0.5, 0.24)) return [x, y];
+        }
+      }
+    }
+    return null;
+  }
+
+  /** True on a kerb-height tile beside a carriageway. */
+  private isPavement(wx: number, wy: number): boolean {
+    if (!this.citySpec) return false;
+    streetAt(wx, wy, this.seed, this.streetInfo);
+    return this.streetInfo.walk;
+  }
+
   /** Regenerate every tile in the window from the noise fields. */
   private buildTerrain(): void {
+    if (this.citySpec) {
+      this.buildCity();
+      return;
+    }
     const spec = this.terrainSpec;
     if (!spec) return;
     const s = this.sample;
@@ -760,6 +1000,9 @@ export class World {
           side: s.side,
           bare: s.bare,
           biome: s.biome,
+          // Landscape worlds have no buildings with insides.
+          storeys: 0,
+          interior: false,
         };
       }
     }
@@ -797,6 +1040,10 @@ export class World {
 
   /** Scatter vegetation, rocks and settlement fires around the player. */
   private populateTerrain(px: number, py: number): void {
+    if (this.citySpec) {
+      this.populateCity(px, py);
+      return;
+    }
     const spec = this.terrainSpec;
     if (!spec) return;
     this.lights.length = 0;
@@ -1355,6 +1602,8 @@ export class World {
         side: null,
         bare: false,
         biome: 0,
+        storeys: 0,
+        interior: false,
       };
     }
   }
@@ -1605,6 +1854,8 @@ function makeLight(
     intensity: intensity ?? 1,
     flicker: flicker ?? 0,
     seed: seedIndex * 37 + 11,
+    z: LIGHT_HEIGHT,
+    lampBase: 0,
     vis: null,
     visDirty: true,
     visOX: 0,
