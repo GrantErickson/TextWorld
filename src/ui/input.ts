@@ -29,6 +29,9 @@ export class Input {
 
   onLockChange: ((locked: boolean) => void) | null = null;
 
+  /** When true, moving the mouse up pitches down (airplane / inverted style). */
+  invertY = false;
+
   attach(canvas: HTMLCanvasElement): void {
     window.addEventListener('keydown', (e) => {
       // Leave the map editor alone.
@@ -109,7 +112,9 @@ export class Input {
     m.lift = (rise ? 1 : 0) - (sink ? 1 : 0);
 
     m.mouseDX = this.dx * MOUSE_YAW;
-    m.mouseDY = this.dy * MOUSE_PITCH;
+    // Mouse Y: positive movementY means the mouse moved down, so negate it so
+    // looking up (mouse up) increases pitch rather than decreasing it.
+    m.mouseDY = this.dy * MOUSE_PITCH * (this.invertY ? 1 : -1);
     this.dx = 0;
     this.dy = 0;
 
