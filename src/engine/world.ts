@@ -1202,8 +1202,13 @@ export class World {
         const across = info.dx < info.dy ? info.dx : info.dy;
         const kerb = info.dx < info.dy ? info.halfX : info.halfY;
         const outer = across > kerb + 0.5;
-        // A shelter every so often on the main roads, and the buses know.
-        if (outer && ((along % 23) + 23) % 23 === 0) {
+        // A shelter every so often on the main roads, and the buses know. It
+        // has to be *rare*: the shelter is the largest thing that stands on a
+        // pavement, so at anything like the spacing of a tree or a bin the
+        // street reads as a row of boxes rather than as a street with a bus
+        // route on it. One every ninety-odd tiles still puts one or two in
+        // view without them being what you see.
+        if (outer && ((along % 92) + 92) % 92 === 0) {
           this.pushProp('busstop', wx + 0.5, wy + 0.5, t.height, null);
           this.busStops.push([wx + 0.5, wy + 0.5]);
           continue;
