@@ -51,6 +51,24 @@ const DOOR_EVERY = 6;
  * as rooms and big enough to stand a few things in.
  */
 const ROOM_PITCH = 5;
+/**
+ * Tiles in one flight of stairs.
+ *
+ * Set by the step the legs can make, not by taste: a flight climbs a whole
+ * STOREY, so a run of N tiles has treads STOREY/N apart and anything that puts
+ * that over STEP_HEIGHT is a staircase you cannot walk up. At STOREY 3.4 and a
+ * step of 0.55 the shortest legal run is seven; nine leaves margin and lands
+ * neatly inside a lot, which is eleven cells across with a wall at each end.
+ */
+export const STAIR_RUN = 9;
+/**
+ * Which row of a lot the stairs run along. Not the row against the outside
+ * wall, which is where it went first: an opening cut in that wall then lands
+ * on a tread part way up a flight, which is a step no legs can make, and the
+ * building is sealed. A cell in leaves a corridor along the frontage for the
+ * door to open into and for the flight to be reached from.
+ */
+const STAIR_ROW = 2;
 
 export interface CityThemeSpec {
   id: string;
@@ -75,6 +93,8 @@ export interface CityThemeSpec {
   interiorFloor: MapSourceMaterial;
   interiorCeiling: MapSourceMaterial;
   interiorWall: MapSourceMaterial;
+  /** Stair treads. Their own material, so a flight reads as a flight. */
+  tread: MapSourceMaterial;
 
   /** Ground relief. A city is nearly flat, but not perfectly. */
   amplitude: number;
@@ -95,6 +115,10 @@ export interface CitySample extends TerrainSample {
   storeys: number;
   /** True for a tile inside a building's footprint rather than on its wall. */
   interior: boolean;
+  /** Position along a flight of stairs, 1-based; 0 for anything else. */
+  stair: number;
+  /** Surface of a floor inside the column, where that is not its top. */
+  innerFloor: Material | null;
   /**
    * Underside of whatever is overhead. Open ground has no ceiling and never
    * asks for this; a room does, and it is not the same surface as its roof.
@@ -117,6 +141,8 @@ export function makeCitySample(): CitySample {
     bandZ: 0,
     storeys: 0,
     interior: false,
+    stair: 0,
+    innerFloor: null,
     ceiling: DEFAULT_ROAD,
   };
 }
@@ -134,6 +160,7 @@ interface Palette {
   interiorFloor: Material;
   interiorCeiling: Material;
   interiorWall: Material;
+  tread: Material;
 }
 
 const palettes = new WeakMap<CityThemeSpec, Palette>();
@@ -166,6 +193,7 @@ function paletteFor(spec: CityThemeSpec): Palette {
       interiorFloor: mat(spec.interiorFloor),
       interiorCeiling: mat(spec.interiorCeiling),
       interiorWall: mat(spec.interiorWall),
+      tread: mat(spec.tread),
     };
     palettes.set(spec, p);
   }
@@ -448,6 +476,13 @@ function lotOf(wx: number, wy: number, seed: number, s: StreetInfo): void {
  * and knocking it out joins four rooms into a pinwheel with a pillar missing.
  */
 function partition(cx: number, cy: number, key: number): boolean {
+  // The strip alongside the stairs is a landing, and runs the lot's full width
+  // rather than being cut in two by the partition that crosses it. Splitting
+  // it is what made a building unreachable: the landing meets the rooms only
+  // at the foot of the flight, so a door opening into the half without the
+  // foot in it led to a dead end and everything past it was sealed.
+  if (cy === STAIR_ROW - 1 && cx >= 1 && cx <= STAIR_RUN) return false;
+
   const onX = cx % ROOM_PITCH === 0;
   const onY = cy % ROOM_PITCH === 0;
   if (!onX && !onY) return false;
@@ -504,6 +539,8 @@ export function sampleCity(
 
   out.storeys = 0;
   out.interior = false;
+  out.stair = 0;
+  out.innerFloor = null;
   out.ceiling = pal.roof;
   out.sideLower = null;
   out.bandZ = 0;
@@ -558,7 +595,12 @@ export function sampleCity(
   const cy = cellY;
   const key = hashi(lx * 31 + street.ix * 7, ly * 17 + street.iy * 13, seed + 555);
 
-  const base = ground + 0.18;
+  // A building stands on one level, taken at the middle of its lot rather
+  // than under each tile. Following the ground per tile tilts every floor and
+  // every roof by however much the land moves across a lot — small enough to
+  // pass unnoticed until stairs, where the top of a flight then misses the
+  // slab it is supposed to land on by most of a step.
+  const base = cityGround(spec, wx - cx + (LOT >> 1), wy - cy + (LOT >> 1), seed) + 0.18;
   const dens = density(wx, wy, seed);
   const district = districtAt(wx, wy, seed);
 
@@ -566,8 +608,9 @@ export function sampleCity(
   // how many are left is most of what separates a downtown from a suburb.
   const openChance = district === DISTRICT_RESIDENTIAL ? 14 : district === DISTRICT_INDUSTRIAL ? 7 : 4;
   if (key % 100 < openChance) {
-    out.height = base;
-    out.bed = base;
+    // An open lot is ground, not a building, so it keeps the land's own shape.
+    out.height = ground + 0.18;
+    out.bed = out.height;
     out.surface = pal.park;
     out.bare = false;
     return;
@@ -624,6 +667,33 @@ export function sampleCity(
   const nN = lotIdAt(wx, wy - 1, seed);
   const nS = lotIdAt(wx, wy + 1, seed);
 
+  // ---- the stairs
+  //
+  // One flight per storey, all running the same way, along a single row just
+  // inside the wall. Every tile of the run carries a tread at the same
+  // fraction of the way up *every* storey, so the treads over one tile sit a
+  // whole storey apart and there is room to stand between them.
+  //
+  // The obvious alternative — a switchback, with the next flight starting
+  // where the last one finished — cannot be built out of tiles this way. Its
+  // treads over a given tile end up STOREY/N apart at the turn, which is a
+  // staircase with no headroom at exactly the point you have to walk under it.
+  // Running every flight the same way means walking back along each floor to
+  // start the next one, which is what a straight-run stair core does anyway.
+  const alongRun = cy === STAIR_ROW && cx >= 1 && cx <= STAIR_RUN;
+  if (alongRun && storeys >= 2) {
+    // Only where the whole run is this building. A lot clipped short by its
+    // block would otherwise get a flight that stops in a wall.
+    const first = wx - cx + 1;
+    const last = wx - cx + STAIR_RUN;
+    if (lotIdAt(first, wy, seed) === (key | 1) && lotIdAt(last, wy, seed) === (key | 1)) {
+      // Which end is the bottom is the lot's own business, so neighbouring
+      // buildings do not all climb the same way.
+      const up = ((key >>> 23) & 1) === 1;
+      out.stair = up ? cx : STAIR_RUN + 1 - cx;
+    }
+  }
+
   // Whether this tile is a wall of the *inside* rather than of the outside,
   // which decides which skin it wears: brick and a shopfront belong on a
   // frontage, and putting them on a partition papers the sitting room in them.
@@ -635,7 +705,9 @@ export function sampleCity(
     // measured from the lot's own edge: a partition every ROOM_PITCH cells,
     // which for a full lot is one line on each axis and four rooms.
     inner = true;
-    out.interior = !partition(cx, cy, key);
+    // A stair overrides the partition lattice it crosses: the run is nine
+    // cells and a room is four, so it has to pass through one.
+    out.interior = out.stair > 0 || !partition(cx, cy, key);
   } else {
     // A way in. The opening goes in a wall with the street on exactly one side
     // and more of this building on the other, so it always leads somewhere and
@@ -658,9 +730,11 @@ export function sampleCity(
       // skipped rather than the wall moved: the frontage has another along.
       const inX = cx + (alongX ? 0 : nW === LOT_STREET ? 1 : -1);
       const inY = cy + (alongX ? (nN === LOT_STREET ? 1 : -1) : 0);
+      const ontoStair = inY === STAIR_ROW && inX >= 1 && inX <= STAIR_RUN;
       if (
         behind === mine &&
         !partition(inX, inY, key) &&
+        !ontoStair &&
         (((along % DOOR_EVERY) + DOOR_EVERY) % DOOR_EVERY) === (key >>> 17) % DOOR_EVERY
       ) {
         out.interior = true;
@@ -684,8 +758,13 @@ export function sampleCity(
     // tops out at and what the spans are derived from; `bed` is the floor you
     // actually walk on, which is what collision and the eye ride.
     out.solid = false;
-    out.bed = base;
-    out.surface = pal.interiorFloor;
+    // `surface` is the top of the column and stays the roof: seen from a
+    // taller building next door, a hollowed one was coming out with its
+    // middle in floorboards and only its wall ring in roofing.
+    out.innerFloor = out.stair > 0 ? pal.tread : pal.interiorFloor;
+    out.bed = out.stair > 0 ? base + (out.stair / STAIR_RUN) * STOREY : base;
+  } else {
+    out.stair = 0;
   }
 }
 
@@ -733,6 +812,9 @@ const DOWNTOWN: CityThemeSpec = {
   interiorFloor: { color: '#7a6e60', pattern: 'tile', roughness: 0.35 },
   interiorCeiling: { color: '#857f77', pattern: 'panel', roughness: 0.25 },
   interiorWall: { color: '#80796e', pattern: 'panel', roughness: 0.4 },
+  // Treads are lighter than the floor they rise from, so a flight reads as a
+  // flight rather than as a stepped lump of the same room.
+  tread: { color: '#96897a', pattern: 'planks', roughness: 0.45 },
 
   exposure: 1.5,
   fogColor: '#9fb0c2',

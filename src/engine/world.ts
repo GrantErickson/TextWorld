@@ -20,7 +20,7 @@ import { lookupTerrainTheme, makeSample, sampleTerrain, terrainThemeIds } from '
 import { hashi } from './noise.ts';
 import { LIGHT_HEIGHT } from './lighting.ts';
 import { EYE_HEIGHT } from './camera.ts';
-import { STOREY } from './city.ts';
+import { STAIR_RUN, STOREY } from './city.ts';
 import type { SkyState } from './daynight.ts';
 import { DAY_LENGTH, makeSkyState, skyAt } from './daynight.ts';
 import type { CitySample, CityThemeSpec, StreetInfo } from './city.ts';
@@ -403,6 +403,36 @@ export class World {
     }
 
     const base = t.height - t.storeys * STOREY;
+
+    if (t.stair > 0) {
+      // A tread at the same fraction of the way up every storey, rather than
+      // a slab at each of them. The first flight is solid underneath, which is
+      // what a staircase looks like from the room it rises out of; the rest
+      // are thin, so you can walk under the flight above.
+      //
+      // Consecutive treads over one tile are a whole STOREY apart, which is
+      // the entire reason every flight runs the same way. A switchback would
+      // put them STOREY/RUN apart at the turn — a step's worth of headroom at
+      // exactly the point you have to walk under one.
+      const rise = (t.stair / STAIR_RUN) * STOREY;
+      out[0] = out[0] ?? { lo: 0, hi: 0 };
+      out[0].lo = FLOOR_OF_THE_WORLD;
+      out[0].hi = base + rise;
+      let n = 1;
+      // Flights run from the ground to the top floor, so the last one lands on
+      // storey - 1 and there is none under the roof.
+      for (let k = 1; k <= t.storeys - 2; k++) {
+        const top = base + k * STOREY + rise;
+        out[n] = out[n] ?? { lo: 0, hi: 0 };
+        out[n].lo = top - SLAB;
+        out[n].hi = top;
+        n++;
+      }
+      out[n] = out[n] ?? { lo: 0, hi: 0 };
+      out[n].lo = t.height - SLAB;
+      out[n].hi = t.height;
+      return n + 1;
+    }
     out[0] = out[0] ?? { lo: 0, hi: 0 };
     out[0].lo = FLOOR_OF_THE_WORLD;
     out[0].hi = base;
@@ -467,12 +497,22 @@ export class World {
   private surfaceOf(t: Tile, feetZ: number): number {
     if (!t.interior || t.storeys <= 0) return t.bed;
     const n = this.spansOf(t, this.collideSpans);
-    let floor = this.collideSpans[0].hi;
-    for (let i = 1; i < n; i++) {
+
+    // The highest surface a leg could reach, which is *not* the same as the
+    // highest one below the feet. A stair tread stands a fraction of a storey
+    // above the floor you are on, so a rule that only ever looks downward
+    // finds the tread of the flight below instead and walks you off the
+    // landing into the stairwell. Looking up by a step finds the tread you
+    // meant, and refusing is still possible: nothing within a step's reach
+    // falls through to the lowest surface there is, which is by definition
+    // more than a step away, so `canStep` turns it down.
+    const reach = feetZ + STEP_HEIGHT;
+    let floor = -Infinity;
+    for (let i = 0; i < n; i++) {
       const hi = this.collideSpans[i].hi;
-      if (hi <= feetZ + 0.06 && hi > floor) floor = hi;
+      if (hi <= reach && hi > floor) floor = hi;
     }
-    return floor;
+    return floor > -Infinity ? floor : this.collideSpans[0].hi;
   }
 
   /** Depth of standing water over a spot; 0 on dry land and indoors. */
@@ -786,6 +826,8 @@ export class World {
             biome: 0,
             storeys: 0,
             interior: false,
+            innerFloor: null,
+            stair: 0,
           };
         } else if (entry?.wall) {
           tiles[i] = {
@@ -810,6 +852,8 @@ export class World {
             biome: 0,
             storeys: 0,
             interior: false,
+            innerFloor: null,
+            stair: 0,
           };
         } else if (entry) {
           tiles[i] = {
@@ -834,6 +878,8 @@ export class World {
             biome: 0,
             storeys: 0,
             interior: false,
+            innerFloor: null,
+            stair: 0,
           };
         } else {
           // Unlisted characters: whitespace and '.' are open floor, anything
@@ -861,6 +907,8 @@ export class World {
             biome: 0,
             storeys: 0,
             interior: false,
+            innerFloor: null,
+            stair: 0,
           };
         }
       }
@@ -1103,6 +1151,8 @@ export class World {
           biome: s.biome,
           storeys: s.storeys,
           interior: s.interior,
+          innerFloor: s.innerFloor,
+          stair: s.stair,
         };
       }
     }
@@ -1251,6 +1301,8 @@ export class World {
    * stand out in the middle where you walk.
    */
   private furnish(wx: number, wy: number, t: Tile, px: number, py: number): void {
+    // Nothing stands on a staircase.
+    if (t.stair > 0) return;
     const dx = wx + 0.5 - px;
     const dy = wy + 0.5 - py;
     if (dx * dx + dy * dy > FURNITURE_CULL * FURNITURE_CULL) return;
@@ -1807,6 +1859,8 @@ export class World {
           // Landscape worlds have no buildings with insides.
           storeys: 0,
           interior: false,
+          innerFloor: null,
+          stair: 0,
         };
       }
     }
@@ -2417,6 +2471,8 @@ export class World {
         biome: 0,
         storeys: 0,
         interior: false,
+        innerFloor: null,
+        stair: 0,
       };
     }
   }

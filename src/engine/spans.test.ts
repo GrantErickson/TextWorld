@@ -436,6 +436,122 @@ test('rooms have something standing in them', () => {
   assert.ok(kinds.size >= 4, `only ${kinds.size} kinds of thing in every room in the city`);
 });
 
+test('a flight of stairs climbs exactly one storey, and you can walk up it', () => {
+  // Two ways this fails without ever looking broken. A tread rise over the
+  // step limit gives a staircase that renders perfectly and cannot be walked
+  // up — you stop a third of the way and shuffle. And a flight whose top does
+  // not line up with the slab it lands on leaves a lip you climb by accident
+  // or a hole you fall through, which reads as the collision being flaky.
+  const world = World.fromCity(CITY_THEMES.city, 7);
+  const push = { forward: 1, strafe: 0, turn: 0, mouseDX: 0, mouseDY: 0, run: false, jump: false, lift: 0 };
+
+  let foot: { x: number; y: number } | null = null;
+  let best = Infinity;
+  for (let y = world.originY + 3; y < world.originY + world.height - 3; y++) {
+    for (let x = world.originX + 3; x < world.originX + world.width - 3; x++) {
+      const t = world.tileAt(x, y);
+      if (!t || t.stair !== 1) continue;
+      const d = (x - world.spawnX) ** 2 + (y - world.spawnY) ** 2;
+      if (d < best) {
+        best = d;
+        foot = { x, y };
+      }
+    }
+  }
+  assert.ok(foot, 'the city built no stairs at all');
+  const { x: fx, y: fy } = foot!;
+  const t0 = world.tileAt(fx, fy)!;
+  const base = t0.height - t0.storeys * STOREY;
+  const dirX = world.tileAt(fx + 1, fy)?.stair === 2 ? 1 : -1;
+
+  // Every tread of the run is within a step of the one before it.
+  let prev = base;
+  for (let i = 0; i < 9; i++) {
+    const t = world.tileAt(fx + dirX * i, fy);
+    assert.ok(t && t.stair === i + 1, `the run breaks at tread ${i + 1}`);
+    assert.ok(t!.bed - prev <= 0.55 + 1e-9, `tread ${i + 1} rises ${(t!.bed - prev).toFixed(2)}, past a step`);
+    assert.ok(t!.bed > prev, `tread ${i + 1} does not rise at all`);
+    prev = t!.bed;
+  }
+  assert.ok(Math.abs(prev - (base + STOREY)) < 0.02, `the run tops out at ${(prev - base).toFixed(2)}, not a storey`);
+
+  // And it can actually be walked. Standing on the foot, five seconds facing
+  // up the flight has to end a storey higher.
+  const cam = new Camera();
+  cam.placeAt(fx + 0.5, fy + 0.5, dirX > 0 ? 0 : Math.PI, t0.bed, world.eyeHeight);
+  for (let i = 0; i < 300; i++) cam.update(1 / 60, push, world, 40);
+  const climbed = cam.z - world.eyeHeight - base;
+  assert.ok(climbed > STOREY - 0.3, `walked the flight for five seconds and got ${climbed.toFixed(2)} up`);
+
+  // Stepping off the top lands on the floor the flight serves, not on a lip
+  // above it or a drop back into the stairwell.
+  cam.angle += Math.PI / 2;
+  cam.updateBasis();
+  for (let i = 0; i < 90; i++) cam.update(1 / 60, push, world, 40);
+  const off = world.tileAt(Math.floor(cam.x), Math.floor(cam.y));
+  assert.ok(off && off.interior, 'stepped off the stairs into something solid');
+  assert.ok(
+    Math.abs(cam.z - world.eyeHeight - (base + STOREY)) < 0.25,
+    `came off the flight at ${(cam.z - world.eyeHeight - base).toFixed(2)} rather than on the floor above`,
+  );
+});
+
+test('the flight you step onto is the one going up from the floor you are on', () => {
+  // A stair tile in a tall building carries a tread for every flight, one
+  // above another. Deciding which of them you would be standing on by looking
+  // only *downward* from the feet finds the tread of the flight below — so
+  // stepping off a landing walks you into the stairwell and you fall a storey
+  // instead of climbing one. It has to look up by a step as well.
+  const world = World.fromCity(CITY_THEMES.city, 7);
+  let foot: { x: number; y: number } | null = null;
+  for (let y = world.originY + 3; y < world.originY + world.height - 3 && !foot; y++) {
+    for (let x = world.originX + 3; x < world.originX + world.width - 3; x++) {
+      const t = world.tileAt(x, y);
+      // Three storeys is the smallest building with a second flight in it.
+      if (t && t.stair === 1 && t.storeys >= 3) {
+        foot = { x, y };
+        break;
+      }
+    }
+  }
+  assert.ok(foot, 'no building tall enough to have two flights');
+  const t0 = world.tileAt(foot!.x, foot!.y)!;
+  const base = t0.height - t0.storeys * STOREY;
+
+  for (let k = 0; k < t0.storeys - 1; k++) {
+    const feet = base + k * STOREY;
+    const onto = world.bedAt(foot!.x + 0.5, foot!.y + 0.5, feet);
+    assert.ok(
+      onto > feet + 1e-6 && onto - feet <= 0.55 + 1e-9,
+      `from floor ${k} the foot of the flight reads as ${(onto - feet).toFixed(2)} away, not a step up`,
+    );
+  }
+});
+
+test("a building's floors are level", () => {
+  // They follow the ground otherwise, which tilts every slab and every roof by
+  // however much the land moves across a lot. Small enough to pass unnoticed
+  // until stairs, where the top of a flight then misses its landing.
+  const world = World.fromCity(CITY_THEMES.city, 7);
+  let checked = 0;
+  for (let y = world.originY + 2; y < world.originY + world.height - 2; y++) {
+    for (let x = world.originX + 2; x < world.originX + world.width - 2; x++) {
+      const t = world.tileAt(x, y);
+      if (!t || !t.interior || t.stair > 0) continue;
+      for (const [dx, dy] of [
+        [1, 0],
+        [0, 1],
+      ] as const) {
+        const n = world.tileAt(x + dx, y + dy);
+        if (!n || !n.interior || n.stair > 0 || n.storeys !== t.storeys) continue;
+        assert.ok(Math.abs(n.bed - t.bed) < 1e-9, `the floor steps by ${(n.bed - t.bed).toFixed(3)} at (${x}, ${y})`);
+        checked++;
+      }
+    }
+  }
+  assert.ok(checked > 500, `only ${checked} pairs of floor to compare`);
+});
+
 test('open ground reports no ceiling at all', () => {
   const world = World.fromTerrain(TERRAIN_THEMES.wilds, 2024);
   const t = world.tileAt(Math.floor(world.spawnX), Math.floor(world.spawnY));

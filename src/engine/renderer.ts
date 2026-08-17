@@ -668,13 +668,19 @@ export class Renderer {
           // Only the ground span carries the tile's baked normal and its
           // water; a slab inside a building is flat and dry by construction.
           const ground = this.planeSpan[s] === 0;
-          const mat = up ? tile.floor : tile.ceiling;
+          // `floor` is the top of the column — the roof, the street, the
+          // hillside. A floor *inside* the column is a different surface, and
+          // a hollowed building without this came out with its middle in
+          // floorboards and only its wall ring in roofing, seen from anything
+          // taller next door.
+          const top = this.planeSpan[s] === nCur - 1;
+          const mat = up ? (top ? tile.floor : (tile.innerFloor ?? tile.floor)) : tile.ceiling;
           // Nothing gets the sun through a floor above it. A top surface sees
           // the sky only when it is the highest span of its column — for a
           // street, a hillside or a roof that is the only span there is, so
           // this changes nothing outdoors — and an underside never does,
           // whatever the sun's elevation.
-          const sky = up && this.planeSpan[s] === nCur - 1;
+          const sky = up && top;
           const sun = sky ? (ground ? sunLight(world, tile.nx, tile.ny, tile.nz) : sunLight(world, 0, 0, 1)) : 0;
           // A lake is flat, so the diffuse sun term paints every cell of it
           // the same colour and it reads as a hole rather than a surface.
