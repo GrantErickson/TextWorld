@@ -165,9 +165,9 @@ Per column, each tile can contribute:
    a lattice point every few seconds of walking. The snapshot has to be taken
    *before* the entity list is cleared, which is a mistake that fails silently
    and which `city.test.ts` now checks by object identity.
-4. **In progress — the one piece left.** Seamless interiors. The ground floor
-   is done: you can walk in off the street, and the rooms have floors,
-   ceilings and lamps. What is left is getting *upstairs*.
+4. **Done.** Seamless interiors. You can walk in off the street, through
+   rooms with walls, doorways and furniture, and up a flight of stairs to the
+   floor above.
 
    The order to do it in, each step leaving the tree working:
 
@@ -195,14 +195,10 @@ Per column, each tile can contribute:
       of wall pierced once at a hashed position. 96% of interior floor is still
       reachable from the street. Seven pieces of furniture, sparse, big things
       against a wall.
-   5. **Next.** **Stairs** — the slabs are already generated (`spansOf` stacks
-      one per storey) and the floors above the first are already hollow; what
-      is missing is any way up, and any light, furniture or floor material up
-      there. The shape that works is a switchback: two rows of a shaft, each
-      carrying alternate flights, so consecutive treads over one tile differ by
-      two storeys and there is headroom. One row rising +x on the even flights
-      and the other rising -x on the odd ones lands each flight's top a single
-      step from the next one's bottom.
+   5. **Done.** **Stairs** — a run of `STAIR_RUN` treads along one row of the
+      lot, one flight per storey, all running the same way. 29 of 39 buildings
+      in a window have a full flight; the rest are lots their block clipped too
+      short to fit one.
 
    Collision follows the same span list: which storey you are on is whichever
    span your feet are standing on, and `canStep` compares against the surface
@@ -210,6 +206,12 @@ Per column, each tile can contribute:
 
 Steps 1-2 fit the existing renderer, so the city is walkable and lit before the
 largest and riskiest piece starts.
+
+What is left is polish rather than structure: the way in is the full height of
+the ground floor, so it reads as a glazed shopfront rather than as a door with
+a lintel; a stairwell is an open shaft to the roof and is lit as one big
+volume; and the floors above the first have no furniture, since nothing
+furnishes by storey yet.
 
 ### Three things a building with an inside taught the rest of the engine
 
@@ -243,6 +245,27 @@ largest and riskiest piece starts.
   dark, and which ones depended on where the lot happened to fall. `isRoomLamp`
   answers from the lot's own cell coordinates, so there is exactly one per room
   however the lots land.
+- **Every flight of stairs runs the same way, and the run length is
+  arithmetic.** A flight climbs a whole STOREY, so a run of N tiles has treads
+  STOREY/N apart, and anything past STEP_HEIGHT is a staircase that renders
+  perfectly and cannot be walked up. A switchback is the obvious shape and does
+  not fit a tile grid: its treads over one tile end up STOREY/N apart *at the
+  turn*, which is a step's worth of headroom where you have to walk under one.
+  All flights the same way puts consecutive treads a whole storey apart; the
+  price is walking back along each floor, which a straight-run stair core makes
+  you do anyway.
+- **A building stands on one level, taken at the middle of its lot.** Following
+  the ground per tile tilts every floor and every roof by however much the land
+  moves across the lot. That went unnoticed through the entire skyline and was
+  fatal to stairs: the top of a flight missed its landing by 0.43 of the 0.55 a
+  leg has.
+- **Collision has to look *up* by a step as well as down.** A stair tile in a
+  tall building carries a tread per flight, one above another, and picking the
+  one you stand on by looking only downward finds the tread of the flight
+  below — so stepping off a landing walks you into the stairwell. `surfaceOf`
+  takes the highest surface within a step's reach; refusing still works because
+  nothing in reach falls through to the lowest surface there is, which is by
+  definition further than a step.
 - **Furniture has to be far sparser than a plan suggests.** Half the wall tiles
   occupied looks right drawn from above and is unusable in the view: a shelf a
   tile and a half wide at less than a tile's range fills two thirds of the
@@ -643,7 +666,7 @@ Data flow per frame:
 
 ## Tests
 
-`npm test` runs 92 tests via `node --test` — no framework, no browser, because
+`npm test` runs 95 tests via `node --test` — no framework, no browser, because
 the engine is DOM-free. `npm run build` runs them between the typecheck and the
 bundle.
 
@@ -752,6 +775,15 @@ text dump and obvious in a screenshot.
 Remaining / not done:
 
 - No CI.
+- **Interiors are ground-floor-furnished only.** The storeys above the first
+  are hollow, lit and walkable, and nothing furnishes or lights them per floor
+  — `furnish` and `lightInteriors` both key off `t.bed`, which is the ground.
+- **The way into a building is the full height of its ground floor**, so it
+  reads as a glazed shopfront rather than as a door with a lintel over it. A
+  real opening wants a span above the head, which means a second stair-like
+  field on the tile.
+- **A stairwell is an open shaft to the roof**, so it is lit as one tall volume
+  by the lamps that happen to fall on the run.
 - **Water basins cannot merge.** Two that brim over into one another share a
   level only because `pool` rounds them together, not because anything computed
   a spill point. The proper fix is a depression-filling pass — priority flood
