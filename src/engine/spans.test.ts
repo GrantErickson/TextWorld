@@ -13,6 +13,8 @@ import assert from 'node:assert/strict';
 
 import type { Span } from './world.ts';
 import { SLAB, World } from './world.ts';
+import { Camera } from './camera.ts';
+import { Renderer } from './renderer.ts';
 import { CITY_THEMES, STOREY } from './city.ts';
 import { TERRAIN_THEMES } from './terrain.ts';
 import { TILE_EMPTY } from './types.ts';
@@ -104,6 +106,64 @@ test('surfaceUnder finds the floor you are on and the ceiling above it', () => {
   } finally {
     tile!.interior = false;
   }
+});
+
+test('a slab overhead is drawn as a ceiling where there would be sky', () => {
+  // The renderer had never drawn an underside in its life, and this is the
+  // only thing that exercises the path before buildings are hollowed out. It
+  // fails silently in both directions worth caring about: a ceiling projected
+  // into the wrong rows still produces a plausible frame, and one whose
+  // distance comes out inverted produces a plausible frame that is inside out.
+  const world = World.fromCity(CITY_THEMES.city, 7);
+  const cam = new Camera();
+  const r = new Renderer();
+  const COLS = 60;
+  const ROWS = 24;
+  r.resize(COLS, ROWS);
+
+  cam.placeAt(world.spawnX, world.spawnY, world.spawnAngle, world.groundAt(world.spawnX, world.spawnY));
+  world.update(0.016, cam.x, cam.y);
+  r.buf.invalidate();
+  r.render(world, cam, 0.5);
+  const openGlyph = r.buf.glyph.slice();
+  const openFg = r.buf.fg.slice();
+
+  // A single tile's ceiling sits directly overhead and out of shot, so it
+  // takes a room's worth of them before any of it reaches the top of the
+  // screen. Only open ground is roofed over, and the slab count is chosen so
+  // the ground span keeps the height it already had — the frame below the
+  // horizon then has to come back unchanged, which is the other half of this.
+  const cx = Math.floor(world.spawnX);
+  const cy = Math.floor(world.spawnY);
+  let roofed = 0;
+  for (let y = cy - 9; y <= cy + 9; y++) {
+    for (let x = cx - 9; x <= cx + 9; x++) {
+      const t = world.tileAt(x, y);
+      if (!t || t.storeys > 0) continue;
+      t.storeys = 2;
+      t.height = t.height + 2 * STOREY;
+      t.interior = true;
+      roofed++;
+    }
+  }
+  assert.ok(roofed > 100, `only ${roofed} tiles to roof over`);
+
+  r.buf.invalidate();
+  r.render(world, cam, 0.5);
+
+  const horizon = ROWS * 0.5;
+  let above = 0;
+  let below = 0;
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      const i = y * COLS + x;
+      if (r.buf.glyph[i] === openGlyph[i] && r.buf.fg[i] === openFg[i]) continue;
+      if (y + 0.5 < horizon) above++;
+      else below++;
+    }
+  }
+  assert.ok(above > 200, `a roof over the street changed only ${above} cells above the horizon`);
+  assert.equal(below, 0, `${below} cells below the horizon moved when only the sky should have`);
 });
 
 test('open ground reports no ceiling at all', () => {

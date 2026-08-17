@@ -1,5 +1,5 @@
 import type { Camera } from './camera.ts';
-import type { World } from './world.ts';
+import type { Span, World } from './world.ts';
 import type { RayHit } from './raycast.ts';
 import { castRay, makeHit } from './raycast.ts';
 import { applyFog, ensureVisibility, makeAccum, sunLight, surfaceLight } from './lighting.ts';
@@ -66,6 +66,20 @@ export class Renderer {
    */
   private doneRows = new Uint8Array(0);
   private cellDepth = false;
+  /**
+   * The two columns the terrain march is between: the tile it is entering and
+   * the one it just left. Kept as a pair of reusable arrays and swapped rather
+   * than copied, so a march that crosses a few hundred tiles per column still
+   * allocates nothing.
+   */
+  private spansHere: Span[] = [];
+  private spansPrev: Span[] = [];
+  /** Scratch for one tile's visible surfaces; see `drawTerrain`. */
+  private faceLo = new Float64Array(64);
+  private faceHi = new Float64Array(64);
+  private planeZ = new Float64Array(64);
+  private planeUp = new Uint8Array(64);
+  private planeSpan = new Int32Array(64);
 
   /** World-space end point of each column's ray; drawn on the minimap. */
   rayX = new Float32Array(0);
@@ -410,20 +424,37 @@ export class Renderer {
   // ------------------------------------------------------- terrain pass
 
   /**
-   * Non-level ground, drawn with a y-buffer.
+   * Non-level ground, drawn per column against a coverage mask.
    *
    * The flat-floor passes cast by screen *row*, which works only because every
    * cell in a row sits at the same distance — true of a level floor and false
-   * of a hillside. So terrain marches per *column* instead, front to back,
-   * where each cell contributes at most two things: a vertical face where the
-   * ground steps up from the cell before it, and its top surface spanning the
-   * distances the ray spends inside it.
+   * of a hillside. So terrain marches per *column* instead, front to back, and
+   * each tile it crosses offers up to three kinds of surface:
    *
-   * The coverage mask records which rows of a column are resolved. It only
-   * screen, so occlusion needs no depth compare: standing on a plateau, the
-   * valley immediately below the edge is hidden simply because those rows were
-   * already covered, and it reappears further out exactly where the line of
-   * sight clears the lip. Whatever rows remain at the end are sky.
+   * - the vertical **face** where this column is solid and the one before it
+   *   was not, standing at the tile boundary
+   * - the **top** of every solid span that ends below the eye
+   * - the **underside** of every solid span that begins above it
+   *
+   * The mask records which rows are resolved, so occlusion needs no depth
+   * compare: standing on a plateau, the valley immediately below the edge is
+   * hidden because the lip took those rows, and it reappears further out
+   * exactly where the line of sight clears it. Whatever rows remain are sky.
+   *
+   * Two things about the order are not obvious and both matter:
+   *
+   * - The face is offered before the horizontal surfaces of the same tile. It
+   *   stands at the near boundary, so it is the closest thing in the step.
+   * - Within a tile, the horizontal surfaces have to be offered in the order a
+   *   ray meets them, which is *not* the order the spans are in. Below the eye
+   *   a higher plane is crossed at a shorter distance than a lower one; above
+   *   the eye it is the other way about. So tops go downward from the eye and
+   *   undersides go upward from it.
+   *
+   * With a single span per column — a street, a hillside, a solid wall — there
+   * is never a plane above the eye and the face is always the one step up from
+   * the previous height, so this resolves exactly what the height-per-tile
+   * version did.
    */
   private drawTerrain(
     world: World,
@@ -476,8 +507,9 @@ export class Renderer {
         sideDistY = (mapY + 1 - cam.y) * deltaY;
       }
 
-      const here = world.tileAt(mapX, mapY);
-      let prevH = here ? here.height : 0;
+      let cur = this.spansHere;
+      let prev = this.spansPrev;
+      let nPrev = world.spansAt(mapX, mapY, prev);
       let dNear = 0;
       let side = 0;
       // Rows still to resolve in this column.
@@ -495,24 +527,56 @@ export class Renderer {
 
         const tile = world.tileAt(mapX, mapY);
         if (!tile) break;
-        const h = tile.height;
+        const nCur = world.spansOf(tile, cur);
 
-        // ---- the vertical face where the ground steps up
-        if (h > prevH && dNear > 0.02) {
-          const rowTop = horizon + (projY * (camZ - h)) / dNear;
-          const rowBot = horizon + (projY * (camZ - prevH)) / dNear;
-          const y0 = Math.max(0, Math.ceil(rowTop - 0.5));
-          const y1 = Math.min(rows - 1, Math.floor(rowBot - 0.5));
-          if (y1 >= y0) {
-            const wx = cam.x + rdx * dNear;
-            const wy = cam.y + rdy * dNear;
-            const upper = tile.side ?? tile.floor;
-            const lower = tile.sideLower;
-            const nx = side === 0 ? -stepX : 0;
-            const ny = side === 0 ? 0 : -stepY;
-            const u = side === 0 ? wy : wx;
-            const fogF = world.fogDensity > 0 ? 1 - Math.exp(-dNear * world.fogDensity) : 0;
-            const sun = sunLight(world, nx, ny, 0);
+        // ---- the vertical faces at the tile boundary
+        //
+        // A face is visible exactly where this column is solid and the one
+        // before it was not, so what to draw is the current spans minus the
+        // previous ones. Both lists are sorted and disjoint, which makes that
+        // one walk rather than a set operation. For a single span apiece it
+        // reduces to the one interval between the two heights, which is what
+        // the height-per-tile version drew.
+        let nFace = 0;
+        if (dNear > 0.02) {
+          for (let i = 0; i < nCur && nFace < 64; i++) {
+            const hi = cur[i].hi;
+            let z = cur[i].lo;
+            for (let j = 0; j < nPrev && z < hi; j++) {
+              const p = prev[j];
+              if (p.hi <= z) continue;
+              if (p.lo >= hi) break;
+              if (p.lo > z && nFace < 64) {
+                this.faceLo[nFace] = z;
+                this.faceHi[nFace] = p.lo;
+                nFace++;
+              }
+              z = p.hi;
+            }
+            if (z < hi && nFace < 64) {
+              this.faceLo[nFace] = z;
+              this.faceHi[nFace] = hi;
+              nFace++;
+            }
+          }
+        }
+
+        if (nFace > 0) {
+          const wx = cam.x + rdx * dNear;
+          const wy = cam.y + rdy * dNear;
+          const upper = tile.side ?? tile.floor;
+          const lower = tile.sideLower;
+          const nx = side === 0 ? -stepX : 0;
+          const ny = side === 0 ? 0 : -stepY;
+          const u = side === 0 ? wy : wx;
+          const fogF = world.fogDensity > 0 ? 1 - Math.exp(-dNear * world.fogDensity) : 0;
+          const sun = sunLight(world, nx, ny, 0);
+
+          for (let f = 0; f < nFace && remaining > 0; f++) {
+            const rowTop = horizon + (projY * (camZ - this.faceHi[f])) / dNear;
+            const rowBot = horizon + (projY * (camZ - this.faceLo[f])) / dNear;
+            const y0 = Math.max(0, Math.ceil(rowTop - 0.5));
+            const y1 = Math.min(rows - 1, Math.floor(rowBot - 0.5));
 
             for (let y = y0; y <= y1; y++) {
               if (done[y]) continue;
@@ -550,76 +614,116 @@ export class Renderer {
           }
         }
 
-        // ---- the top surface, only ever visible from above it
-        if (h < camZ - 0.002 && remaining > 0) {
-          const rise = projY * (camZ - h);
+        // ---- the horizontal surfaces, gathered in the order a ray meets them
+        //
+        // Below the eye a higher plane is crossed at a shorter distance, above
+        // it a lower one is, so the two sets run outward from eye level in
+        // opposite directions through the span list. They never contend for a
+        // row — tops land below the horizon and undersides above it — so the
+        // two runs can simply be concatenated.
+        let nPlane = 0;
+        if (remaining > 0) {
+          for (let i = nCur - 1; i >= 0 && nPlane < 64; i--) {
+            if (cur[i].hi >= camZ - 0.002) continue;
+            this.planeZ[nPlane] = cur[i].hi;
+            this.planeUp[nPlane] = 1;
+            this.planeSpan[nPlane] = i;
+            nPlane++;
+          }
+          for (let i = 0; i < nCur && nPlane < 64; i++) {
+            if (cur[i].lo <= camZ + 0.002) continue;
+            this.planeZ[nPlane] = cur[i].lo;
+            this.planeUp[nPlane] = 0;
+            this.planeSpan[nPlane] = i;
+            nPlane++;
+          }
+        }
+
+        for (let s = 0; s < nPlane && remaining > 0; s++) {
+          const z = this.planeZ[s];
+          const up = this.planeUp[s] === 1;
+          const rise = projY * (camZ - z);
           const rowFar = horizon + rise / Math.max(dFar, 1e-4);
-          const rowNear = dNear > 0.02 ? horizon + rise / dNear : rows * 8;
-          const y0 = Math.max(0, Math.ceil(rowFar - 0.5));
-          const y1 = Math.min(rows - 1, Math.floor(rowNear - 0.5));
-          if (y1 >= y0) {
-            const mat = tile.floor;
-            const sun = sunLight(world, tile.nx, tile.ny, tile.nz);
-            // A lake is flat, so the diffuse sun term paints every cell of it
-            // the same colour and it reads as a hole rather than a surface.
-            // The glint is what says "water": a view-dependent highlight, so
-            // it slides across the pool as you walk — the one place in this
-            // renderer where something moving is the correct answer.
-            const glinty = tile.water && world.sunIntensity > 0;
-            for (let y = y0; y <= y1; y++) {
-              if (done[y]) continue;
-              const p = y + 0.5 - horizon;
-              if (p <= 0.02) continue; // above the horizon: not this surface
-              done[y] = 1;
-              remaining--;
-              // Invert the projection for this row. Sampling once per span
-              // instead looks fine on the flat and smears badly on a slope.
-              const d = rise / p;
-              const wx = cam.x + rdx * d;
-              const wy = cam.y + rdy * d;
-              const tex = sampleTexture(mat, wx, wy);
-              surfaceLight(world, wx, wy, h, 0, 0, acc);
+          // Off the near end of the step the plane runs away off the screen,
+          // upward for a top and downward for an underside.
+          const rowNear =
+            dNear > 0.02 ? horizon + rise / dNear : horizon + (up ? rows * 8 : -rows * 8);
+          const y0 = Math.max(0, Math.ceil((up ? rowFar : rowNear) - 0.5));
+          const y1 = Math.min(rows - 1, Math.floor((up ? rowNear : rowFar) - 0.5));
+          if (y1 < y0) continue;
 
-              let lit = sun;
-              if (glinty) {
-                // Half-vector against a flat-up normal, so only its z matters.
-                const vz = (camZ - h) / d;
-                const inv = 1 / Math.hypot(1, vz);
-                const hx = world.sunX - rdx * inv;
-                const hy = world.sunY - rdy * inv;
-                const hz = world.sunZ + vz * inv;
-                const hl = Math.hypot(hx, hy, hz) || 1;
-                let s = hz / hl;
-                if (s > 0) {
-                  s *= s;
-                  s *= s;
-                  s *= s;
-                  s *= s; // ^16: a tight, bright band rather than a broad sheen
-                  lit += world.sunIntensity * s * 2.6;
-                }
-              }
+          // Only the ground span carries the tile's baked normal and its
+          // water; a slab inside a building is flat and dry by construction.
+          const ground = this.planeSpan[s] === 0;
+          const mat = up ? tile.floor : tile.ceiling;
+          const sun = up
+            ? ground
+              ? sunLight(world, tile.nx, tile.ny, tile.nz)
+              : sunLight(world, 0, 0, 1)
+            : sunLight(world, 0, 0, -1);
+          // A lake is flat, so the diffuse sun term paints every cell of it
+          // the same colour and it reads as a hole rather than a surface.
+          // The glint is what says "water": a view-dependent highlight, so
+          // it slides across the pool as you walk — the one place in this
+          // renderer where something moving is the correct answer.
+          const glinty = up && ground && tile.water && world.sunIntensity > 0;
 
-              const fogF = world.fogDensity > 0 ? 1 - Math.exp(-d * world.fogDensity) : 0;
-              let r = (mat.color.r / 255) * ((acc.r + sunR * lit) * tex + mat.emissive);
-              let g = (mat.color.g / 255) * ((acc.g + sunG * lit) * tex + mat.emissive);
-              let b = (mat.color.b / 255) * ((acc.b + sunB * lit) * tex + mat.emissive);
-              if (fogF > 0) {
-                r += (fogR - r) * fogF;
-                g += (fogG - g) * fogF;
-                b += (fogB - b) * fogF;
+          for (let y = y0; y <= y1; y++) {
+            if (done[y]) continue;
+            const p = y + 0.5 - horizon;
+            // The plane's own side of the horizon. A row on the other side is
+            // looking away from it and would invert the distance.
+            if (up ? p <= 0.02 : p >= -0.02) continue;
+            done[y] = 1;
+            remaining--;
+            // Invert the projection for this row. Sampling once per span
+            // instead looks fine on the flat and smears badly on a slope.
+            const d = rise / p;
+            const wx = cam.x + rdx * d;
+            const wy = cam.y + rdy * d;
+            const tex = sampleTexture(mat, wx, wy);
+            surfaceLight(world, wx, wy, z, 0, 0, acc);
+
+            let lit = sun;
+            if (glinty) {
+              // Half-vector against a flat-up normal, so only its z matters.
+              const vz = (camZ - z) / d;
+              const inv = 1 / Math.hypot(1, vz);
+              const hx = world.sunX - rdx * inv;
+              const hy = world.sunY - rdy * inv;
+              const hz = world.sunZ + vz * inv;
+              const hl = Math.hypot(hx, hy, hz) || 1;
+              let g = hz / hl;
+              if (g > 0) {
+                g *= g;
+                g *= g;
+                g *= g;
+                g *= g; // ^16: a tight, bright band rather than a broad sheen
+                lit += world.sunIntensity * g * 2.6;
               }
-              buf.write(
-                x,
-                y,
-                KIND_FLOOR,
-                toneMap(r, exposure),
-                toneMap(g, exposure),
-                toneMap(b, exposure),
-                mat.glyphSlot,
-                glyphSeed(wx, wy),
-              );
-              depth[y * cols + x] = d;
             }
+
+            const fogF = world.fogDensity > 0 ? 1 - Math.exp(-d * world.fogDensity) : 0;
+            const glow = mat.emissive + mat.nightGlow * world.windowGlow;
+            let r = (mat.color.r / 255) * ((acc.r + sunR * lit) * tex + glow);
+            let g = (mat.color.g / 255) * ((acc.g + sunG * lit) * tex + glow);
+            let b = (mat.color.b / 255) * ((acc.b + sunB * lit) * tex + glow);
+            if (fogF > 0) {
+              r += (fogR - r) * fogF;
+              g += (fogG - g) * fogF;
+              b += (fogB - b) * fogF;
+            }
+            buf.write(
+              x,
+              y,
+              up ? KIND_FLOOR : KIND_CEILING,
+              toneMap(r, exposure),
+              toneMap(g, exposure),
+              toneMap(b, exposure),
+              mat.glyphSlot,
+              glyphSeed(wx, wy),
+            );
+            depth[y * cols + x] = d;
           }
         }
 
@@ -633,9 +737,17 @@ export class Renderer {
           side = 1;
         }
         dNear = dFar;
-        prevH = h;
+        // The column just drawn becomes the one behind. Swapping the arrays
+        // rather than copying them is what keeps a march of a few hundred
+        // tiles per screen column free of allocation.
+        const swap = prev;
+        prev = cur;
+        cur = swap;
+        nPrev = nCur;
         if (dNear >= TERRAIN_MAX_DIST) break;
       }
+      this.spansHere = cur;
+      this.spansPrev = prev;
 
       for (let y = 0; y < rows; y++) {
         if (done[y]) continue;

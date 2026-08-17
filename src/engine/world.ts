@@ -351,8 +351,16 @@ export class World {
    */
   spansAt(wx: number, wy: number, out: Span[]): number {
     const t = this.tileAt(wx, wy);
-    if (!t) return 0;
+    return t ? this.spansOf(t, out) : 0;
+  }
 
+  /**
+   * The same, for a caller that already has the tile in hand. The terrain
+   * march does, once per tile it crosses per screen column, and looking it up
+   * a second time to ask for its spans is the sort of thing that costs a
+   * measurable slice of the frame at a few tens of thousands of calls.
+   */
+  spansOf(t: Tile, out: Span[]): number {
     if (!t.interior || t.storeys <= 0) {
       out[0] = out[0] ?? { lo: 0, hi: 0 };
       out[0].lo = FLOOR_OF_THE_WORLD;
