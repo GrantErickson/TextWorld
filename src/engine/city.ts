@@ -62,6 +62,13 @@ const ROOM_PITCH = 5;
  */
 export const STAIR_RUN = 9;
 /**
+ * Head height of a way into a building, above its floor. Left to the underside
+ * of the slab an opening is most of a storey — 3.1 tiles against an eye at
+ * 0.86 — and reads as a shopfront window rather than as somewhere you walk in.
+ * Twice eye height reads as a door in a tall ground floor.
+ */
+export const DOOR_HEIGHT = 2.1;
+/**
  * Which row of a lot the stairs run along. Not the row against the outside
  * wall, which is where it went first: an opening cut in that wall then lands
  * on a tread part way up a flight, which is a step no legs can make, and the
@@ -117,6 +124,8 @@ export interface CitySample extends TerrainSample {
   interior: boolean;
   /** Position along a flight of stairs, 1-based; 0 for anything else. */
   stair: number;
+  /** A way in: open to head height, solid above. */
+  doorway: boolean;
   /** Surface of a floor inside the column, where that is not its top. */
   innerFloor: Material | null;
   /**
@@ -142,6 +151,7 @@ export function makeCitySample(): CitySample {
     storeys: 0,
     interior: false,
     stair: 0,
+    doorway: false,
     innerFloor: null,
     ceiling: DEFAULT_ROAD,
   };
@@ -514,6 +524,12 @@ export function isRoomLamp(wx: number, wy: number, seed: number, s: StreetInfo):
   if (s.road || s.walk) return false;
   lotOf(wx, wy, seed, s);
   const mid = ROOM_PITCH >> 1;
+  // A stairwell is nine cells long and open from the ground to the roof, so
+  // the room lattice gives it two lamps at one end of a volume two storeys
+  // tall and the foot of the flight comes out in the dark. Along the run they
+  // go closer together, and they ride the treads up because the tile's own
+  // surface is what they hang above.
+  if (cellY === STAIR_ROW && cellX >= 1 && cellX <= STAIR_RUN) return cellX % 3 === 2;
   return cellX % ROOM_PITCH === mid && cellY % ROOM_PITCH === mid;
 }
 
@@ -540,6 +556,7 @@ export function sampleCity(
   out.storeys = 0;
   out.interior = false;
   out.stair = 0;
+  out.doorway = false;
   out.innerFloor = null;
   out.ceiling = pal.roof;
   out.sideLower = null;
@@ -738,6 +755,7 @@ export function sampleCity(
         (((along % DOOR_EVERY) + DOOR_EVERY) % DOOR_EVERY) === (key >>> 17) % DOOR_EVERY
       ) {
         out.interior = true;
+        out.doorway = true;
       }
     }
   }

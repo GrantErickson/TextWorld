@@ -15,6 +15,7 @@ import type { Span } from './world.ts';
 import { SLAB, World } from './world.ts';
 import { Camera } from './camera.ts';
 import { Renderer } from './renderer.ts';
+import { ensureVisibility, makeAccum, surfaceLight } from './lighting.ts';
 import { CITY_THEMES, STOREY } from './city.ts';
 import { TERRAIN_THEMES } from './terrain.ts';
 import { TILE_EMPTY } from './types.ts';
@@ -550,6 +551,111 @@ test("a building's floors are level", () => {
     }
   }
   assert.ok(checked > 500, `only ${checked} pairs of floor to compare`);
+});
+
+test('a way in is a door with a head on it, not a missing storey', () => {
+  const world = World.fromCity(CITY_THEMES.city, 7);
+  let doors = 0;
+  for (let y = world.originY + 2; y < world.originY + world.height - 2; y++) {
+    for (let x = world.originX + 2; x < world.originX + world.width - 2; x++) {
+      const t = world.tileAt(x, y);
+      if (!t || !t.doorway) continue;
+      doors++;
+      const n = world.spansAt(x, y, spans);
+      assert.equal(n, 2, `the door at (${x}, ${y}) is not a threshold and a head`);
+      const head = spans[1].lo - spans[0].hi;
+      assert.ok(head > 1.5 && head < STOREY - 0.5, `the door at (${x}, ${y}) is ${head.toFixed(2)} tall`);
+      // And solid from the head all the way up: what is over a door is
+      // facade, not the rooms behind it.
+      assert.equal(spans[1].hi, t.height, 'the wall over the door does not reach the roof');
+    }
+  }
+  assert.ok(doors > 10, `only ${doors} ways in across the window`);
+});
+
+test('furniture and lamps follow you up the stairs', () => {
+  // Both are placed one storey at a time: a building near the player can be
+  // sixteen of them, and lighting all of them at once spends the budget on
+  // rooms sealed behind a slab. So the storey they are placed on has to
+  // follow the player, and a floor change has to repopulate.
+  const world = World.fromCity(CITY_THEMES.city, 7);
+  let spot: { x: number; y: number } | null = null;
+  let best = Infinity;
+  for (let y = world.originY + 3; y < world.originY + world.height - 3; y++) {
+    for (let x = world.originX + 3; x < world.originX + world.width - 3; x++) {
+      const t = world.tileAt(x, y);
+      if (!t || !t.interior || t.storeys < 3 || t.stair > 0) continue;
+      const d = (x - world.spawnX) ** 2 + (y - world.spawnY) ** 2;
+      if (d < best) {
+        best = d;
+        spot = { x, y };
+      }
+    }
+  }
+  assert.ok(spot, 'no building tall enough to have an upstairs');
+  const t0 = world.tileAt(spot!.x, spot!.y)!;
+  const base = t0.height - t0.storeys * STOREY;
+  const furniture = new Set(['table', 'chair', 'shelf', 'counter', 'crate', 'houseplant', 'desklamp']);
+
+  const seen: Array<{ furn: number; lamps: number }> = [];
+  for (let k = 0; k < 2; k++) {
+    const feet = base + k * STOREY;
+    world.update(1 / 60, spot!.x + 0.5, spot!.y + 0.5, feet);
+    let furn = 0;
+    let lamps = 0;
+    for (const e of world.entities) {
+      if (!furniture.has(e.def.id)) continue;
+      if (Math.hypot(e.x - spot!.x, e.y - spot!.y) > 12) continue;
+      if (Math.abs(e.z - feet) < STOREY * 0.5) furn++;
+    }
+    for (const l of world.lights) {
+      if (l.lampBase !== 0 || l.radius < 3) continue;
+      if (Math.hypot(l.x - spot!.x, l.y - spot!.y) > 12) continue;
+      if (Math.abs(l.z - (feet + STOREY * 0.72)) < STOREY * 0.5) lamps++;
+    }
+    seen.push({ furn, lamps });
+  }
+  for (let k = 0; k < seen.length; k++) {
+    assert.ok(seen[k].furn > 3, `floor ${k} came out with ${seen[k].furn} pieces of furniture`);
+    assert.ok(seen[k].lamps > 1, `floor ${k} came out with ${seen[k].lamps} lamps`);
+  }
+});
+
+test('a stairwell is lit for its whole length', () => {
+  // The room lattice puts its lamps every ROOM_PITCH cells, which over a run
+  // of nine leaves the foot of the flight out of reach of either of them —
+  // in a shaft that is open from the ground to the roof, so there is nothing
+  // else to light it.
+  // Measured as light arriving, not as distance to a lamp. Being inside a
+  // radius is not the same as being lit: the lamp hangs most of a storey above
+  // its own tread, so one at the far end of a run is within reach of the foot
+  // of the flight on paper and delivers almost nothing to it.
+  const world = World.fromCity(CITY_THEMES.city, 7);
+  world.timeOfDay = 0.02;
+  world.advanceClock(0);
+  ensureVisibility(world);
+  const acc = makeAccum();
+  const ambient = (world.ambient * (world.ambientColor.r + world.ambientColor.g + world.ambientColor.b)) / (3 * 255);
+
+  const lit: number[] = [];
+  for (let y = Math.floor(world.spawnY) - 14; y <= Math.floor(world.spawnY) + 14; y++) {
+    for (let x = Math.floor(world.spawnX) - 14; x <= Math.floor(world.spawnX) + 14; x++) {
+      const t = world.tileAt(x, y);
+      if (!t || t.stair === 0) continue;
+      surfaceLight(world, x + 0.5, y + 0.5, t.bed, 0, 0, acc);
+      lit.push((acc.r + acc.g + acc.b) / 3 / ambient);
+    }
+  }
+  assert.ok(lit.length > 8, `only ${lit.length} treads near the spawn to check`);
+  lit.sort((a, b) => a - b);
+  const darkest = lit[0];
+  const middling = lit[lit.length >> 1];
+
+  // Stated as *evenness* rather than as a level, because every lamp here is
+  // strong enough that a bare multiple of ambient passes whatever the spacing
+  // is. On the room lattice alone the darkest tread came out at a fifth of the
+  // middling one; with lamps along the run it is about a half.
+  assert.ok(darkest > middling / 3, `the dark end of a flight gets ${(darkest / middling).toFixed(2)} of the middle's light`);
 });
 
 test('open ground reports no ceiling at all', () => {

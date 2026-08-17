@@ -20,7 +20,7 @@ import { lookupTerrainTheme, makeSample, sampleTerrain, terrainThemeIds } from '
 import { hashi } from './noise.ts';
 import { LIGHT_HEIGHT } from './lighting.ts';
 import { EYE_HEIGHT } from './camera.ts';
-import { STAIR_RUN, STOREY } from './city.ts';
+import { DOOR_HEIGHT, STAIR_RUN, STOREY } from './city.ts';
 import type { SkyState } from './daynight.ts';
 import { DAY_LENGTH, makeSkyState, skyAt } from './daynight.ts';
 import type { CitySample, CityThemeSpec, StreetInfo } from './city.ts';
@@ -316,6 +316,10 @@ export class World {
   private readonly busStops: Array<[number, number]> = [];
   /** Reused by the collision queries, which run several times a frame. */
   private readonly collideSpans: Span[] = [];
+  /** Feet height of the player, as of the last update; drives which storey
+   * of a building gets furnished and lit. */
+  private playerZ = 0;
+  private populatedZ = 0;
   private readonly sample: TerrainSample = makeSample();
 
   private constructor(width: number, height: number, tiles: Tile[]) {
@@ -403,6 +407,20 @@ export class World {
     }
 
     const base = t.height - t.storeys * STOREY;
+
+    if (t.doorway) {
+      // A hole in a wall, not a missing storey. Open from the threshold to the
+      // head and solid from there up: the tile is part of the facade, so what
+      // is above the door is wall all the way to the roof rather than the
+      // rooms behind it.
+      out[0] = out[0] ?? { lo: 0, hi: 0 };
+      out[0].lo = FLOOR_OF_THE_WORLD;
+      out[0].hi = base;
+      out[1] = out[1] ?? { lo: 0, hi: 0 };
+      out[1].lo = base + DOOR_HEIGHT;
+      out[1].hi = t.height;
+      return 2;
+    }
 
     if (t.stair > 0) {
       // A tread at the same fraction of the way up every storey, rather than
@@ -599,8 +617,9 @@ export class World {
 
   // ----------------------------------------------------------------- update
 
-  update(dt: number, playerX: number, playerY: number): void {
+  update(dt: number, playerX: number, playerY: number, playerZ = 0): void {
     this.time += dt;
+    this.playerZ = playerZ;
     if (this.dayLength > 0) this.advanceClock(dt / this.dayLength);
     if (this.infinite) {
       this.stream(playerX, playerY);
@@ -828,6 +847,7 @@ export class World {
             interior: false,
             innerFloor: null,
             stair: 0,
+            doorway: false,
           };
         } else if (entry?.wall) {
           tiles[i] = {
@@ -854,6 +874,7 @@ export class World {
             interior: false,
             innerFloor: null,
             stair: 0,
+            doorway: false,
           };
         } else if (entry) {
           tiles[i] = {
@@ -880,6 +901,7 @@ export class World {
             interior: false,
             innerFloor: null,
             stair: 0,
+            doorway: false,
           };
         } else {
           // Unlisted characters: whitespace and '.' are open floor, anything
@@ -909,6 +931,7 @@ export class World {
             interior: false,
             innerFloor: null,
             stair: 0,
+            doorway: false,
           };
         }
       }
@@ -1153,6 +1176,7 @@ export class World {
           interior: s.interior,
           innerFloor: s.innerFloor,
           stair: s.stair,
+          doorway: s.doorway,
         };
       }
     }
@@ -1167,6 +1191,7 @@ export class World {
   private populateCity(px: number, py: number): void {
     const spec = this.citySpec;
     if (!spec) return;
+    this.populatedZ = this.playerZ;
 
     // Snapshot the actors *before* the entity list is cleared. Reading them
     // out afterwards finds an empty list, which silently rebuilt every car on
@@ -1254,7 +1279,9 @@ export class World {
         if (dx * dx + dy * dy > INTERIOR_LIGHT_CULL * INTERIOR_LIGHT_CULL) continue;
         if (!isRoomLamp(x, y, this.seed, info)) continue;
         const light = makeLight(x + 0.5, y + 0.5, ROOM_LAMP_RADIUS, '#ffe6c4', ROOM_LAMP_INTENSITY, 0, 0, -1);
-        light.z = t.bed + STOREY * 0.72;
+        // `bed` already carries the tread's rise on a stair, so this hangs the
+        // lamp the same distance over whatever surface is underfoot.
+        light.z = t.bed + this.storeyOf(t) * STOREY + STOREY * 0.72;
         this.lights.push(light);
       }
     }
@@ -1307,7 +1334,10 @@ export class World {
     const dy = wy + 0.5 - py;
     if (dx * dx + dy * dy > FURNITURE_CULL * FURNITURE_CULL) return;
 
-    const h = hashi(wx, wy, this.seed ^ 0x1f0e);
+    const k = this.storeyOf(t);
+    // The storey goes into the hash, or every floor of a building is furnished
+    // identically and climbing the stairs shows you the same room again.
+    const h = hashi(wx * 31 + k, wy, this.seed ^ 0x1f0e);
     const roll = h % 1000;
 
     // Against a wall, meaning some 4-neighbour is not floor.
@@ -1317,7 +1347,7 @@ export class World {
     if (!this.isRoomFloor(wx, wy - 1)) walls++;
     if (!this.isRoomFloor(wx, wy + 1)) walls++;
 
-    const z = t.bed;
+    const z = t.bed + k * STOREY;
     if (walls > 0) {
       // Sparse, and it has to be. A room is four tiles square, so a shelf in
       // the next tile is 1.5 tiles of furniture at less than a tile's range
@@ -1338,6 +1368,18 @@ export class World {
       if ((h >>> 11) % 3 === 0) this.pushProp('desklamp', wx + 0.5, wy + 0.5, z + 0.72, null);
     } else if (roll < 200) this.pushProp('chair', wx + 0.5, wy + 0.5, z, null);
     else if (roll < 240) this.pushProp('houseplant', wx + 0.5, wy + 0.5, z, null);
+  }
+
+  /**
+   * Which storey of this building the player is on, clamped into it. Taken per
+   * building rather than once for the window: they stand on their own lots at
+   * their own levels, so a single global storey index would furnish one of
+   * them a floor out.
+   */
+  private storeyOf(t: Tile): number {
+    const base = t.height - t.storeys * STOREY;
+    const k = Math.round((this.playerZ - base) / STOREY);
+    return k < 0 ? 0 : k > t.storeys - 1 ? t.storeys - 1 : k;
   }
 
   /** Floor you can stand on inside a building, as opposed to wall or street. */
@@ -1861,6 +1903,7 @@ export class World {
           interior: false,
           innerFloor: null,
           stair: 0,
+          doorway: false,
         };
       }
     }
@@ -2046,6 +2089,16 @@ export class World {
    * A cheap comparison on almost every frame; real work a few times a minute.
    */
   private stream(px: number, py: number): void {
+    // Changing floor repopulates as surely as walking a block does. Lamps and
+    // furniture are placed for one storey at a time — a building near the
+    // player may be sixteen of them, and lighting all of them at once would
+    // spend the whole budget on rooms nobody can see through a slab — so the
+    // storey they are placed on has to follow the player up the stairs.
+    if (this.citySpec && Math.abs(this.playerZ - this.populatedZ) > STOREY * 0.5) {
+      this.populateTerrain(px, py);
+      this.markLightsDirty();
+    }
+
     const cx = this.originX + this.width * 0.5;
     const cy = this.originY + this.height * 0.5;
     if (Math.abs(px - cx) <= SHIFT_THRESHOLD && Math.abs(py - cy) <= SHIFT_THRESHOLD) return;
@@ -2473,6 +2526,7 @@ export class World {
         interior: false,
         innerFloor: null,
         stair: 0,
+        doorway: false,
       };
     }
   }

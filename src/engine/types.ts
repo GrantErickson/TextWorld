@@ -119,6 +119,13 @@ export interface Tile {
    * makes it climbable.
    */
   stair: number;
+  /**
+   * A way through a wall rather than a gap in it: open from the floor to the
+   * head, solid from there to the roof. Without the head the opening is the
+   * whole height of the storey, which reads as a shopfront window rather than
+   * as somewhere you walk in.
+   */
+  doorway: boolean;
 }
 
 export interface Door {

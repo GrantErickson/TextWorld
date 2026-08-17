@@ -398,7 +398,7 @@ function frame(now: number): void {
       move.mouseDY = 0;
     }
     camera.update(dt, move, world, display.rows);
-    world.update(dt, camera.x, camera.y);
+    world.update(dt, camera.x, camera.y, camera.z - world.eyeHeight);
   }
 
   if (!paused || needsRedraw) {
