@@ -207,11 +207,9 @@ Per column, each tile can contribute:
 Steps 1-2 fit the existing renderer, so the city is walkable and lit before the
 largest and riskiest piece starts.
 
-What is left is polish rather than structure: the way in is the full height of
-the ground floor, so it reads as a glazed shopfront rather than as a door with
-a lintel; a stairwell is an open shaft to the roof and is lit as one big
-volume; and the floors above the first have no furniture, since nothing
-furnishes by storey yet.
+The way in is a real door — `Tile.doorway` makes the column open to head
+height and solid above — and the floors above the first are furnished and lit
+like the ground one.
 
 ### Three things a building with an inside taught the rest of the engine
 
@@ -245,6 +243,13 @@ furnishes by storey yet.
   dark, and which ones depended on where the lot happened to fall. `isRoomLamp`
   answers from the lot's own cell coordinates, so there is exactly one per room
   however the lots land.
+- **Lighting a long thin space needs its own anchors, and the test for it has
+  to measure evenness.** A stairwell is nine cells of open shaft; the room
+  lattice gives it lamps at one end and the foot of the flight comes out at a
+  fifth of the light the middle gets. Two obvious assertions both pass anyway —
+  "within a lamp's radius" (being inside a radius is not being lit) and "above
+  ambient" (every lamp in here is strong). Darkest against middling is what
+  actually catches it.
 - **Every flight of stairs runs the same way, and the run length is
   arithmetic.** A flight climbs a whole STOREY, so a run of N tiles has treads
   STOREY/N apart, and anything past STEP_HEIGHT is a staircase that renders
@@ -666,7 +671,7 @@ Data flow per frame:
 
 ## Tests
 
-`npm test` runs 95 tests via `node --test` — no framework, no browser, because
+`npm test` runs 98 tests via `node --test` — no framework, no browser, because
 the engine is DOM-free. `npm run build` runs them between the typecheck and the
 bundle.
 
@@ -775,15 +780,15 @@ text dump and obvious in a screenshot.
 Remaining / not done:
 
 - No CI.
-- **Interiors are ground-floor-furnished only.** The storeys above the first
-  are hollow, lit and walkable, and nothing furnishes or lights them per floor
-  — `furnish` and `lightInteriors` both key off `t.bed`, which is the ground.
-- **The way into a building is the full height of its ground floor**, so it
-  reads as a glazed shopfront rather than as a door with a lintel over it. A
-  real opening wants a span above the head, which means a second stair-like
-  field on the tile.
-- **A stairwell is an open shaft to the roof**, so it is lit as one tall volume
-  by the lamps that happen to fall on the run.
+- **Buildings are furnished and lit one storey at a time**, the one the player
+  is on, because a tall one would otherwise spend the whole light budget on
+  rooms sealed behind a slab. A change of floor therefore repopulates, which
+  costs what a window shift costs. Nothing carries over between storeys, so a
+  room is re-arranged each time you pass through it on the way up — invisible
+  in practice, and it would not be if anything in a room could be moved.
+- Buildings with no street frontage at all — in the middle of a block — are
+  sealed, and lots their block clipped too short get no stairs. Both are
+  invisible from outside, so neither is worth a special case yet.
 - **Water basins cannot merge.** Two that brim over into one another share a
   level only because `pool` rounds them together, not because anything computed
   a spill point. The proper fix is a depression-filling pass — priority flood
