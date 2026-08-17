@@ -165,26 +165,29 @@ Per column, each tile can contribute:
    a lattice point every few seconds of walking. The snapshot has to be taken
    *before* the entity list is cleared, which is a mistake that fails silently
    and which `city.test.ts` now checks by object identity.
-4. **Not started — the one piece left.** Seamless interiors. Everything else
+4. **In progress — the one piece left.** Seamless interiors. Everything else
    in the city is done. `Tile.storeys` and `Tile.interior` are generated and
-   carried through already, so the data exists; what does not exist is any
-   ability in the renderer to draw an underside.
+   carried through already, so the data exists.
 
    The order to do it in, each step leaving the tree working:
 
-   1. **`spansAt(wx, wy)` on World** — returns the solid intervals of a
-      column. For everything that is not a hollow building this is the single
-      span it is today, so the whole engine keeps its current behaviour and
-      the step is verifiable by a test asserting exactly that.
-   2. **Coverage mask in `drawTerrain`** — replace `yBuf` with a per-column
-      done mask plus a count of unresolved rows, and start drawing the
-      *underside* of spans above the eye. With one span per column this is
-      provably the same picture, which is the point: it can be landed and
-      checked before any building is hollowed out.
-   3. **Hollow the ground floor** — perimeter tiles stay solid, interior tiles
-      get a floor at pavement level and a ceiling slab a storey up, with one
-      gap in the perimeter for a door. First moment anything is visibly
-      different, and it exercises ceilings and interior lighting.
+   1. **Done.** **`spansAt(wx, wy)` on World** — returns the solid intervals
+      of a column. For everything that is not a hollow building this is the
+      single span it is today, so the whole engine keeps its current
+      behaviour, and a test asserts exactly that. `spansOf` is the same thing
+      for a caller that already holds the tile; the terrain march does, and
+      the second lookup was worth removing.
+   2. **Done.** **Coverage mask in `drawTerrain`, then undersides** — the
+      y-buffer became a per-column done mask plus a count of unresolved rows
+      (2a), and the march then moved from one height per tile to the span
+      list, drawing the underside of every span above the eye (2b). Both are
+      no-ops with one span per column, and both were checked that way rather
+      than assumed: all 26,600 cells of a five-heading city sweep come back
+      identical, and the wilds render to a byte-identical buffer.
+   3. **Next.** **Hollow the ground floor** — perimeter tiles stay solid,
+      interior tiles get a floor at pavement level and a ceiling slab a storey
+      up, with one gap in the perimeter for a door. First moment anything is
+      visibly different, and it exercises ceilings and interior lighting.
    4. **Stack storeys, then stairs** — slabs every STOREY, a stairwell column
       with no slabs and a stepped floor to climb.
 
@@ -194,6 +197,21 @@ Per column, each tile can contribute:
 
 Steps 1-2 fit the existing renderer, so the city is walkable and lit before the
 largest and riskiest piece starts.
+
+Two things about the march are worth knowing before touching it again, because
+both were wrong in the first draft of step 2b:
+
+- **A face is a set difference, not a height comparison.** Visible wall is
+  where this column is solid and the one before it is not. With one span
+  apiece that reduces to the single interval between the two heights, which is
+  what the old code computed; with slabs it is several intervals, and the gaps
+  are exactly the strips a slab already hides.
+- **Surfaces have to be offered to the mask in the order a ray meets them**,
+  which is not the order the spans are in. Below the eye a *higher* plane is
+  crossed at a shorter distance than a lower one; above the eye it is the
+  other way about. So tops run downward from eye level and undersides upward,
+  and since tops land below the horizon and undersides above it, the two runs
+  never contend for a row.
 
 ### Two things step 2 added that the rest of the engine now depends on
 
@@ -569,7 +587,7 @@ Data flow per frame:
 
 ## Tests
 
-`npm test` runs 56 tests via `node --test` — no framework, no browser, because
+`npm test` runs 85 tests via `node --test` — no framework, no browser, because
 the engine is DOM-free. `npm run build` runs them between the typecheck and the
 bundle.
 
