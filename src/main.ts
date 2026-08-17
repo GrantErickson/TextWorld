@@ -21,8 +21,20 @@ import { PRESETS, presetById } from './maps.ts';
 
 const STORAGE_SOURCE = 'textworld.source';
 const STORAGE_PRESET = 'textworld.preset';
-const STORAGE_GLYPHS = 'textworld.glyphs';
-const STORAGE_CONTRAST = 'textworld.contrast';
+// Suffixed: the first version of these keys was written on *every* load, which
+// meant a stored value shadowed the shipped default from a visitor's first
+// visit onward and changing the default could never reach anyone. Renaming
+// them retires those auto-written values once.
+const STORAGE_GLYPHS = 'textworld.glyphs.v2';
+const STORAGE_CONTRAST = 'textworld.contrast.v2';
+
+/**
+ * What the site looks like before anyone touches a control. A saved preference
+ * still wins over these — but only one the viewer actually chose.
+ */
+const DEFAULT_GLYPHS: GlyphMode = 'ascii';
+const DEFAULT_CONTRAST = 1.15;
+const DEFAULT_CELL_SIZE = 14;
 
 /** Debounce on the editor: long enough to finish a word, short enough to feel live. */
 const EDIT_DELAY = 400;
@@ -203,8 +215,8 @@ for (const p of PRESETS) {
 // the map asks for rather than replacing it: `contrast` here is a trim applied
 // over the map's own value, so a well-tuned map still looks like itself.
 {
-  let mode: GlyphMode = 'blocks';
-  let trim = 1;
+  let mode: GlyphMode = DEFAULT_GLYPHS;
+  let trim = DEFAULT_CONTRAST;
   try {
     const saved = localStorage.getItem(STORAGE_GLYPHS) as GlyphMode | null;
     if (saved && GLYPH_MODES.includes(saved)) mode = saved;
@@ -213,13 +225,13 @@ for (const p of PRESETS) {
   } catch {
     // No storage available; the defaults are fine.
   }
-  setGlyphs(mode);
-  setContrastTrim(trim);
+  // Restoring is not choosing: writing here would persist the default on the
+  // first load and the default could never be changed for anyone again.
+  setGlyphs(mode, false);
+  setContrastTrim(trim, false);
 }
 
-display.setFontSize(Number(fontSizeEl.value));
-fontSizeOut.value = fontSizeEl.value;
-relayout();
+setFontSize(DEFAULT_CELL_SIZE);
 
 // -------------------------------------------------------------------- events
 
@@ -279,12 +291,13 @@ function setFontSize(px: number): void {
  * brightness, so without dropping that history every cell inside its dead band
  * would keep drawing the old ramp's character until the light happened to move.
  */
-function setGlyphs(mode: GlyphMode): void {
+function setGlyphs(mode: GlyphMode, persist = true): void {
   setGlyphMode(mode);
   glyphModeEl.value = mode;
   camera.teleported = true;
   display.invalidate();
   needsRedraw = true;
+  if (!persist) return;
   try {
     localStorage.setItem(STORAGE_GLYPHS, mode);
   } catch {
@@ -292,12 +305,13 @@ function setGlyphs(mode: GlyphMode): void {
   }
 }
 
-function setContrastTrim(value: number): void {
+function setContrastTrim(value: number, persist = true): void {
   const clamped = Math.max(0.6, Math.min(1.6, value));
   renderer.contrastTrim = clamped;
   contrastEl.value = String(clamped);
   contrastOut.value = clamped.toFixed(2);
   needsRedraw = true;
+  if (!persist) return;
   try {
     localStorage.setItem(STORAGE_CONTRAST, String(clamped));
   } catch {
