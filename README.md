@@ -1,5 +1,7 @@
 # TextWorld
 
+**[▶ Live Demo](https://granterickson.github.io/TextWorld/)**
+
 A character-cell 3D renderer that runs in the browser. Simple text maps in,
 raycast text world out — every "pixel" on screen is a coloured character.
 
