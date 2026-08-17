@@ -4,6 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TextWorld</title>
+    <!--
+      Three bars of the glyph ramp, inline as a data URI.
+
+      Declared rather than left implicit on purpose: with no icon tag a browser
+      requests /favicon.ico at the *origin* root, which under a project page
+      means granterickson.github.io/favicon.ico rather than .../TextWorld/ —
+      a 404 in every visitor's console, and whatever icon a future user site
+      publishes at that name would silently become this one's.
+    -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNiAxNiI+PHJlY3Qgd2lkdGg9IjE2IiBoZWlnaHQ9IjE2IiBmaWxsPSIjMGIwZjE2Ii8+PHJlY3QgeD0iMiIgeT0iMyIgd2lkdGg9IjMiIGhlaWdodD0iMTEiIGZpbGw9IiMyMzJjM2EiLz48cmVjdCB4PSI2IiB5PSI1IiB3aWR0aD0iMyIgaGVpZ2h0PSI5IiBmaWxsPSIjN2M4ODk5Ii8+PHJlY3QgeD0iMTAiIHk9IjciIHdpZHRoPSIzIiBoZWlnaHQ9IjciIGZpbGw9IiM2ZmQyYzAiLz48L3N2Zz4="
+    />
   </head>
   <body>
     <div id="app">

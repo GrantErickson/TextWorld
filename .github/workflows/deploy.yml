@@ -39,3 +39,74 @@ jobs:
 
       - id: deployment
         uses: actions/deploy-pages@v4
+
+      # A green deploy is not the same as a working site.
+      #
+      # This workflow succeeded on every push for weeks while the published
+      # site was broken: the repository's Pages source was still "deploy from a
+      # branch", so github.io served the *repo root* — the Vite dev shell, whose
+      # <script src="/src/main.ts"> is an absolute path that 404s under the
+      # /TextWorld/ project prefix and is served as video/mp2t even when found.
+      # The build was fine, the upload was fine, and nothing in either could
+      # notice that the artifact was being ignored. So the deploy now checks
+      # what the URL actually returns.
+      - name: Smoke-test the deployed site
+        env:
+          URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          # Explicit checks throughout, so -e is off on purpose: several of the
+          # commands below are *expected* to return non-zero (a grep that finds
+          # nothing, a curl against a URL that is not up yet).
+          set +e
+          set -u
+          echo "Checking $URL"
+
+          # Pages' CDN can trail the deployment by a few seconds.
+          html=""
+          for attempt in 1 2 3 4 5 6; do
+            html=$(curl -fsSL --max-time 20 "$URL")
+            [ -n "$html" ] && break
+            echo "  attempt $attempt: nothing served yet, retrying in 10s"
+            sleep 10
+          done
+          if [ -z "$html" ]; then
+            echo "::error::$URL served nothing."
+            exit 1
+          fi
+
+          printf '%s' "$html" | grep -q '/src/main\.ts'
+          if [ $? -eq 0 ]; then
+            echo "::error::$URL is serving the unbuilt dev shell instead of dist/."
+            echo "::error::Pages is publishing the repo root. Point the Pages source at Actions:"
+            echo "::error::  gh api -X PUT repos/OWNER/REPO/pages -f build_type=workflow"
+            exit 1
+          fi
+
+          asset=$(printf '%s' "$html" | grep -oE 'src="[^"]+\.js"' | head -n 1 | sed -e 's/^src="//' -e 's/"$//')
+          if [ -z "$asset" ]; then
+            echo "::error::no module script found in the served HTML."
+            exit 1
+          fi
+
+          # Resolve relative to the page URL, exactly as a browser would.
+          asset_url="${URL%/}/${asset#./}"
+          echo "Checking $asset_url"
+          probe=$(curl -sSL -o /dev/null -w '%{http_code} %{content_type}' --max-time 20 "$asset_url")
+          [ -z "$probe" ] && probe="000 none"
+          code=${probe%% *}
+          ctype=${probe#* }
+          echo "  $code  $ctype"
+
+          if [ "$code" != "200" ]; then
+            echo "::error::the bundle did not load ($code)."
+            exit 1
+          fi
+          case "$ctype" in
+            *javascript*) ;;
+            *)
+              echo "::error::the bundle is served as '$ctype'; a browser will refuse to execute that as a module."
+              exit 1
+              ;;
+          esac
+
+          echo "OK - $URL serves $asset"
