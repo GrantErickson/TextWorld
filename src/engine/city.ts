@@ -45,6 +45,12 @@ const WALK = 2;
 const LOT = 11;
 /** Tiles of frontage between one way into a building and the next. */
 const DOOR_EVERY = 6;
+/**
+ * Cells of a lot between internal partitions. At LOT 11 this puts one wall on
+ * each axis and leaves four rooms of four tiles square — small enough to read
+ * as rooms and big enough to stand a few things in.
+ */
+const ROOM_PITCH = 5;
 
 export interface CityThemeSpec {
   id: string;
@@ -402,13 +408,78 @@ export function lotIdAt(wx: number, wy: number, seed: number): number {
   return hashi(lx * 31 + ix * 7, ly * 17 + iy * 13, seed + 555) | 1;
 }
 
-/** The lot a block-interior tile belongs to, as a stable integer pair. */
-function lotOf(wx: number, wy: number, seed: number, s: StreetInfo): [number, number] {
+/**
+ * Where a tile sits in its lot: which lot, and which cell of it.
+ *
+ * The lot indices are what identifies a building; the cell indices are what
+ * the inside is laid out on. Both fall out of the same pair of divisions, so
+ * they are answered together through module variables rather than as an
+ * allocated tuple — this runs once per tile of every window rebuild.
+ */
+let lotX = 0;
+let lotY = 0;
+let cellX = 0;
+let cellY = 0;
+function lotOf(wx: number, wy: number, seed: number, s: StreetInfo): void {
   // Measured from the block's own edge rather than from the world origin, so
   // lots line up with the frontage instead of drifting across it.
   const edgeX = streetLine(s.ix, 0, seed) + (wx + 0.5 > streetLine(s.ix, 0, seed) ? s.halfX + WALK : -(s.halfX + WALK));
   const edgeY = streetLine(s.iy, 1, seed) + (wy + 0.5 > streetLine(s.iy, 1, seed) ? s.halfY + WALK : -(s.halfY + WALK));
-  return [Math.floor((wx + 0.5 - edgeX) / LOT), Math.floor((wy + 0.5 - edgeY) / LOT)];
+  const u = wx + 0.5 - edgeX;
+  const v = wy + 0.5 - edgeY;
+  lotX = Math.floor(u / LOT);
+  lotY = Math.floor(v / LOT);
+  // The lot edge does not land on a tile boundary, so this is the *count* of
+  // whole tiles from it — 0 to LOT-1, each value taken exactly once per lot.
+  cellX = Math.floor(u - lotX * LOT);
+  cellY = Math.floor(v - lotY * LOT);
+}
+
+/**
+ * Is this cell of a lot a partition wall rather than floor?
+ *
+ * Walls run along every ROOM_PITCH-th cell of the lot, and each stretch of
+ * wall between two crossings is pierced once. The doorway's position is hashed
+ * from the lot, the wall's line and which stretch of it this is, so it is the
+ * same answer for every tile of that stretch without anything having to walk
+ * along it — which is what keeps the whole layout a pure function of position.
+ *
+ * A crossing itself is never a doorway. Two walls meeting is a corner post,
+ * and knocking it out joins four rooms into a pinwheel with a pillar missing.
+ */
+function partition(cx: number, cy: number, key: number): boolean {
+  const onX = cx % ROOM_PITCH === 0;
+  const onY = cy % ROOM_PITCH === 0;
+  if (!onX && !onY) return false;
+  if (onX && onY) return true;
+
+  if (onX) {
+    const seg = Math.floor(cy / ROOM_PITCH);
+    const door = 1 + (hashi(cx, seg, key ^ 0x5eed) % (ROOM_PITCH - 1));
+    return cy % ROOM_PITCH !== door;
+  }
+  const seg = Math.floor(cx / ROOM_PITCH);
+  const door = 1 + (hashi(seg, cy, key ^ 0x1d0a) % (ROOM_PITCH - 1));
+  return cx % ROOM_PITCH !== door;
+}
+
+/**
+ * Is this the tile a room hangs its lamp from?
+ *
+ * One per room, found from the lot's own lattice rather than from a lattice
+ * laid over the world. A world lattice was what lit the buildings when a
+ * footprint was one big room, and partitions broke it: rooms are four tiles
+ * square, a spacing-six lattice has one point per thirty-six tiles, and better
+ * than half of all rooms came out with no lamp anywhere in them. Which rooms
+ * were dark then depended on where the lot happened to fall, which is exactly
+ * the sort of thing that looks like a renderer bug.
+ */
+export function isRoomLamp(wx: number, wy: number, seed: number, s: StreetInfo): boolean {
+  streetAt(wx, wy, seed, s);
+  if (s.road || s.walk) return false;
+  lotOf(wx, wy, seed, s);
+  const mid = ROOM_PITCH >> 1;
+  return cellX % ROOM_PITCH === mid && cellY % ROOM_PITCH === mid;
 }
 
 /** Ground level. Nearly flat — enough to keep the skyline from being a ruler. */
@@ -480,7 +551,11 @@ export function sampleCity(
   }
 
   // Inside a block. Split it into lots and put something on this one.
-  const [lx, ly] = lotOf(wx, wy, seed, street);
+  lotOf(wx, wy, seed, street);
+  const lx = lotX;
+  const ly = lotY;
+  const cx = cellX;
+  const cy = cellY;
   const key = hashi(lx * 31 + street.ix * 7, ly * 17 + street.iy * 13, seed + 555);
 
   const base = ground + 0.18;
@@ -549,8 +624,18 @@ export function sampleCity(
   const nN = lotIdAt(wx, wy - 1, seed);
   const nS = lotIdAt(wx, wy + 1, seed);
 
+  // Whether this tile is a wall of the *inside* rather than of the outside,
+  // which decides which skin it wears: brick and a shopfront belong on a
+  // frontage, and putting them on a partition papers the sitting room in them.
+  let inner = false;
+
   if (nW === mine && nE === mine && nN === mine && nS === mine) {
-    out.interior = true;
+    // Inside. One big room the size of the footprint reads as a warehouse
+    // whatever is standing in it, so the footprint is divided on a lattice
+    // measured from the lot's own edge: a partition every ROOM_PITCH cells,
+    // which for a full lot is one line on each axis and four rooms.
+    inner = true;
+    out.interior = !partition(cx, cy, key);
   } else {
     // A way in. The opening goes in a wall with the street on exactly one side
     // and more of this building on the other, so it always leads somewhere and
@@ -568,10 +653,30 @@ export function sampleCity(
       const alongX = nN === LOT_STREET || nS === LOT_STREET;
       const behind = alongX ? (nN === LOT_STREET ? nS : nN) : nW === LOT_STREET ? nE : nW;
       const along = alongX ? wx : wy;
-      if (behind === mine && (((along % DOOR_EVERY) + DOOR_EVERY) % DOOR_EVERY) === (key >>> 17) % DOOR_EVERY) {
+      // Where the room behind the opening is, in lot cells. A door cut where
+      // that lands on a partition opens into a one-tile alcove, so the slot is
+      // skipped rather than the wall moved: the frontage has another along.
+      const inX = cx + (alongX ? 0 : nW === LOT_STREET ? 1 : -1);
+      const inY = cy + (alongX ? (nN === LOT_STREET ? 1 : -1) : 0);
+      if (
+        behind === mine &&
+        !partition(inX, inY, key) &&
+        (((along % DOOR_EVERY) + DOOR_EVERY) % DOOR_EVERY) === (key >>> 17) % DOOR_EVERY
+      ) {
         out.interior = true;
       }
     }
+  }
+
+  if (out.interior || inner) {
+    // Anything the inside can see is finished as inside. No shopfront on a
+    // partition or a slab rim either: the band is a thing the *outside* of a
+    // building has, and applying it in here paints the sitting room with a
+    // lit sign.
+    out.ceiling = pal.interiorCeiling;
+    out.side = pal.interiorWall;
+    out.sideLower = null;
+    out.bandZ = 0;
   }
 
   if (out.interior) {
@@ -581,13 +686,6 @@ export function sampleCity(
     out.solid = false;
     out.bed = base;
     out.surface = pal.interiorFloor;
-    out.ceiling = pal.interiorCeiling;
-    out.side = pal.interiorWall;
-    // No shopfront on a slab edge: the band is a thing the *outside* of a
-    // building has, and applying it in here paints the ceiling's rim with a
-    // lit sign.
-    out.sideLower = null;
-    out.bandZ = 0;
   }
 }
 

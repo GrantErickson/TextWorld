@@ -9,9 +9,11 @@ import assert from 'node:assert/strict';
 
 import {
   CITY_THEMES,
+  LOT_STREET,
   SIGNAL_GREEN,
   STOREY,
   districtAt,
+  lotIdAt,
   makeCitySample,
   makeStreetInfo,
   sampleCity,
@@ -331,9 +333,16 @@ test('buildings have a ground floor distinct from the storeys above', () => {
   for (let y = -120; y < 120; y += 2) {
     for (let x = -120; x < 120; x += 2) {
       sampleCity(spec, x, y, SEED, s, info);
-      // Walls only. What is inside a building has no frontage to put a shop
-      // on, and its slab rims want none.
+      // Frontage only. What is inside a building has no shop to put on it,
+      // and neither has a partition between two of its rooms — asking for a
+      // street on one side is what tells those apart from a facade.
       if (s.storeys <= 0 || s.interior) continue;
+      const faces =
+        lotIdAt(x - 1, y, SEED) === LOT_STREET ||
+        lotIdAt(x + 1, y, SEED) === LOT_STREET ||
+        lotIdAt(x, y - 1, SEED) === LOT_STREET ||
+        lotIdAt(x, y + 1, SEED) === LOT_STREET;
+      if (!faces) continue;
       built++;
       if (!s.sideLower) continue;
       shopfronts++;
@@ -353,13 +362,24 @@ test('buildings have a ground floor distinct from the storeys above', () => {
   // once fired and every facade came out in one skin. Asserting on the sample
   // alone cannot see that; the renderer reads the tile.
   const world = World.fromCity(spec, SEED);
-  // Outside faces only: a slab rim inside a room carries no shopfront.
-  const walls = world.tiles.filter((t) => t.storeys > 0 && !t.interior);
-  assert.ok(walls.length > 0, 'no buildings in the window');
-  assert.ok(
-    walls.every((t) => t.sideLower !== null && t.bandZ > 0),
-    'buildings reached the tile without their ground floor',
-  );
+  let fronts = 0;
+  for (let y = world.originY + 1; y < world.originY + world.height - 1; y++) {
+    for (let x = world.originX + 1; x < world.originX + world.width - 1; x++) {
+      const t = world.tileAt(x, y);
+      if (!t || t.storeys <= 0 || t.interior) continue;
+      if (
+        lotIdAt(x - 1, y, SEED) !== LOT_STREET &&
+        lotIdAt(x + 1, y, SEED) !== LOT_STREET &&
+        lotIdAt(x, y - 1, SEED) !== LOT_STREET &&
+        lotIdAt(x, y + 1, SEED) !== LOT_STREET
+      ) {
+        continue;
+      }
+      fronts++;
+      assert.ok(t.sideLower !== null && t.bandZ > 0, `the frontage at (${x}, ${y}) lost its ground floor`);
+    }
+  }
+  assert.ok(fronts > 0, 'no frontage in the window');
 });
 
 test('windows and signs light up only as it gets dark', () => {

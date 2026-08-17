@@ -28,6 +28,7 @@ import {
   SIGNAL_AMBER,
   SIGNAL_GREEN,
   cityThemeIds,
+  isRoomLamp,
   laneOffset,
   lookupCityTheme,
   makeCitySample,
@@ -95,9 +96,14 @@ const LIGHT_BUDGET = 64;
  * be tight enough that every room catches a lattice point: at anything much
  * wider a small room comes out with no lamp in it at all.
  */
-const ROOM_LAMP_SPACING = 6;
+/**
+ * How far out a room is furnished. Much tighter than the street: a room is a
+ * few tiles across and walled, so a table twenty tiles away is behind two
+ * partitions and an outside wall and costs a sprite sort to draw nothing.
+ */
+const FURNITURE_CULL = 15;
 const ROOM_LAMP_RADIUS = 4.4;
-const ROOM_LAMP_INTENSITY = 5.0;
+const ROOM_LAMP_INTENSITY = 4.0;
 
 /**
  * Biggest height change the player can walk over, in tiles. Terrain terraces
@@ -1183,24 +1189,20 @@ export class World {
    * with the door shut, which is the opposite of what a street lamp wants.
    */
   private lightInteriors(px: number, py: number): void {
-    const spacing = ROOM_LAMP_SPACING;
-    const bx0 = Math.floor((px - INTERIOR_LIGHT_CULL) / spacing);
-    const bx1 = Math.floor((px + INTERIOR_LIGHT_CULL) / spacing);
-    const by0 = Math.floor((py - INTERIOR_LIGHT_CULL) / spacing);
-    const by1 = Math.floor((py + INTERIOR_LIGHT_CULL) / spacing);
+    const info = this.streetInfo;
+    const x0 = Math.floor(px - INTERIOR_LIGHT_CULL);
+    const x1 = Math.floor(px + INTERIOR_LIGHT_CULL);
+    const y0 = Math.floor(py - INTERIOR_LIGHT_CULL);
+    const y1 = Math.floor(py + INTERIOR_LIGHT_CULL);
 
-    for (let by = by0; by <= by1 && this.lights.length < LIGHT_BUDGET; by++) {
-      for (let bx = bx0; bx <= bx1 && this.lights.length < LIGHT_BUDGET; bx++) {
-        // Snapped to the lattice point itself rather than hunted for: a search
-        // would pull several lattice points onto the same tile of a small room
-        // and stack lights on top of each other.
-        const x = bx * spacing + (spacing >> 1);
-        const y = by * spacing + (spacing >> 1);
+    for (let y = y0; y <= y1 && this.lights.length < LIGHT_BUDGET; y++) {
+      for (let x = x0; x <= x1 && this.lights.length < LIGHT_BUDGET; x++) {
         const t = this.tileAt(x, y);
         if (!t || !t.interior) continue;
         const dx = x + 0.5 - px;
         const dy = y + 0.5 - py;
         if (dx * dx + dy * dy > INTERIOR_LIGHT_CULL * INTERIOR_LIGHT_CULL) continue;
+        if (!isRoomLamp(x, y, this.seed, info)) continue;
         const light = makeLight(x + 0.5, y + 0.5, ROOM_LAMP_RADIUS, '#ffe6c4', ROOM_LAMP_INTENSITY, 0, 0, -1);
         light.z = t.bed + STOREY * 0.72;
         this.lights.push(light);
@@ -1235,6 +1237,64 @@ export class World {
   }
 
   /**
+   * What is standing in a room.
+   *
+   * Kept much tighter than street furniture, and for a different reason: a
+   * street is seen down its whole length and a room is four tiles across, so
+   * anything more than a few tiles off is behind a wall and costs a sprite
+   * sort for nothing. Everything here is a pure function of the tile, so it
+   * rebuilds with the window like all the other props.
+   *
+   * What goes where is decided by how far the tile is from a wall, because
+   * that is what makes a room look arranged rather than sprinkled: the big
+   * things — shelves, counters — go against a wall, and only the small things
+   * stand out in the middle where you walk.
+   */
+  private furnish(wx: number, wy: number, t: Tile, px: number, py: number): void {
+    const dx = wx + 0.5 - px;
+    const dy = wy + 0.5 - py;
+    if (dx * dx + dy * dy > FURNITURE_CULL * FURNITURE_CULL) return;
+
+    const h = hashi(wx, wy, this.seed ^ 0x1f0e);
+    const roll = h % 1000;
+
+    // Against a wall, meaning some 4-neighbour is not floor.
+    let walls = 0;
+    if (!this.isRoomFloor(wx - 1, wy)) walls++;
+    if (!this.isRoomFloor(wx + 1, wy)) walls++;
+    if (!this.isRoomFloor(wx, wy - 1)) walls++;
+    if (!this.isRoomFloor(wx, wy + 1)) walls++;
+
+    const z = t.bed;
+    if (walls > 0) {
+      // Sparse, and it has to be. A room is four tiles square, so a shelf in
+      // the next tile is 1.5 tiles of furniture at less than a tile's range
+      // and fills two thirds of the screen on its own. Furnishing at the
+      // density that looks right on a plan — half the wall tiles — leaves you
+      // unable to see the room for the furniture in it.
+      if (roll < 80) this.pushProp('shelf', wx + 0.5, wy + 0.5, z, null);
+      else if (roll < 140) this.pushProp('counter', wx + 0.5, wy + 0.5, z, null);
+      else if (roll < 180) this.pushProp('crate', wx + 0.5, wy + 0.5, z, null);
+      else if (roll < 220) this.pushProp('houseplant', wx + 0.5, wy + 0.5, z, null);
+      return;
+    }
+
+    if (roll < 110) {
+      this.pushProp('table', wx + 0.5, wy + 0.5, z, null);
+      // A lamp on the table rather than a light: a real one here would cost a
+      // shadow bake per table and empty the budget in one room.
+      if ((h >>> 11) % 3 === 0) this.pushProp('desklamp', wx + 0.5, wy + 0.5, z + 0.72, null);
+    } else if (roll < 200) this.pushProp('chair', wx + 0.5, wy + 0.5, z, null);
+    else if (roll < 240) this.pushProp('houseplant', wx + 0.5, wy + 0.5, z, null);
+  }
+
+  /** Floor you can stand on inside a building, as opposed to wall or street. */
+  private isRoomFloor(wx: number, wy: number): boolean {
+    const t = this.tileAt(wx, wy);
+    return !!t && t.interior;
+  }
+
+  /**
    * Street furniture and planting. All of it is a pure function of position,
    * so it can be thrown away and rebuilt whenever the window moves without
    * anything appearing to change.
@@ -1255,7 +1315,11 @@ export class World {
         const ddy = wy + 0.5 - py;
         if (ddx * ddx + ddy * ddy > TERRAIN_PROP_CULL * TERRAIN_PROP_CULL) continue;
         const t = this.tileAt(wx, wy);
-        if (!t || t.type !== TILE_EMPTY || t.storeys > 0) continue;
+        if (!t || t.type !== TILE_EMPTY) continue;
+        if (t.storeys > 0) {
+          if (t.interior) this.furnish(wx, wy, t, px, py);
+          continue;
+        }
 
         streetAt(wx, wy, this.seed, info);
 
