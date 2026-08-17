@@ -196,6 +196,12 @@ export interface SpriteDef {
   /** World width of the end-on view; the long view keeps `width`. */
   endWidth?: number;
   /**
+   * Self-illumination for the '@' cells that only appears after dark, scaled
+   * by the world's `windowGlow`. Headlights on all afternoon look broken, and
+   * a real light per car would empty the light budget in a single street.
+   */
+  nightGlow?: number;
+  /**
    * Apply an entity's tint only to the self-lit ('@') cells. A traffic signal
    * needs its lamp to change colour without its post changing with it.
    */

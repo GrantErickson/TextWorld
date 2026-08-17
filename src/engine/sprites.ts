@@ -34,10 +34,12 @@ function def(
   tintLitOnly = false,
   endArt?: string[],
   endWidth?: number,
+  nightGlow = 0,
 ): SpriteDef {
   return {
     endArt,
     endWidth,
+    nightGlow,
     id,
     color: rgb(color[0], color[1], color[2]),
     width,
@@ -232,7 +234,7 @@ export const SPRITES: Record<string, SpriteDef> = {
   'solid',
   false,
   [
-    '  .:####:.  ',
+    '  .@####@.  ',
     '  :######:  ',
     ' .########. ',
     '############',
@@ -241,6 +243,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     '.*########*.',
   ],
   1.05,
+  1.7,
 ),
 
   taxi: def('taxi', [226, 178, 62], 2.2, 0.95, 0, [
@@ -260,7 +263,7 @@ export const SPRITES: Record<string, SpriteDef> = {
   false,
   [
     '    ##      ',
-    '  .:####:.  ',
+    '  .@####@.  ',
     '  :######:  ',
     ' .########. ',
     '############',
@@ -270,6 +273,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     '.*########*.',
   ],
   1.05,
+  1.6,
 ),
 
   van: def('van', [140, 148, 160], 2.4, 1.45, 0, [
@@ -289,7 +293,7 @@ export const SPRITES: Record<string, SpriteDef> = {
   false,
   [
     ' .########. ',
-    '.##########.',
+    '.@########@.',
     '::##::######',
     '############',
     '############',
@@ -300,6 +304,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     ' .##.  .##. ',
   ],
   1.15,
+  1.6,
 ),
 
   truck: def('truck', [96, 110, 132], 3.1, 1.9, 0, [
@@ -321,7 +326,7 @@ export const SPRITES: Record<string, SpriteDef> = {
   'solid',
   false,
   [
-    '  .:######:.',
+    '  .@######@.',
     '  :########:',
     ' .##########',
     '############',
@@ -336,6 +341,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     ' .##.  .##. ',
   ],
   1.3,
+  1.6,
 ),
 
   bus: def('bus', [186, 108, 72], 3.6, 2.0, 0, [
@@ -357,7 +363,7 @@ export const SPRITES: Record<string, SpriteDef> = {
   'solid',
   false,
   [
-    '.::########:',
+    '.@########@:',
     '############',
     '#::##::##::#',
     '#::##::##::#',
@@ -372,6 +378,7 @@ export const SPRITES: Record<string, SpriteDef> = {
     ' .##.  .##. ',
   ],
   1.4,
+  1.6,
 ),
 
   person: def('person', [198, 172, 148], 0.6, 1.55, 0, [

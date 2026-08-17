@@ -777,7 +777,10 @@ export class Renderer {
           const density = DENSITY_CHARS[ch];
           if (density === undefined || density < 0) continue;
 
-          const selfLit = ch === '@' ? def.emissive : def.emissive * 0.25;
+          // Headlights and the like: lit only once it is dark, on the same
+          // clock the windows and lamps read.
+          const nightLit = (def.nightGlow ?? 0) * world.windowGlow;
+          const selfLit = ch === '@' ? def.emissive + nightLit : def.emissive * 0.25;
 
           // Art density scales the colour rather than picking a glyph
           // directly, which lets the shared shading stage choose the character

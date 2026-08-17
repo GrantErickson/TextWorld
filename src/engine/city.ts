@@ -61,6 +61,8 @@ export interface CityThemeSpec {
   /** Bright signage over a shopfront, on a minority of lots. */
   signs: MapSourceMaterial[];
   park: MapSourceMaterial;
+  /** Road markings: centre lines and crossing stripes. */
+  paint: MapSourceMaterial;
 
   /** Ground relief. A city is nearly flat, but not perfectly. */
   amplitude: number;
@@ -110,6 +112,7 @@ interface Palette {
   roof: Material;
   glass: Material;
   park: Material;
+  paint: Material;
 }
 
 const palettes = new WeakMap<CityThemeSpec, Palette>();
@@ -138,6 +141,7 @@ function paletteFor(spec: CityThemeSpec): Palette {
       roof: mat(spec.roof),
       glass: mat(spec.glass),
       park: mat(spec.park),
+      paint: mat(spec.paint),
     };
     palettes.set(spec, p);
   }
@@ -308,6 +312,21 @@ export function density(wx: number, wy: number, seed: number): number {
   return norm01(fbm2(wx * 0.0032, wy * 0.0032, seed + 4801, 3));
 }
 
+export const DISTRICT_DOWNTOWN = 0;
+export const DISTRICT_RESIDENTIAL = 1;
+export const DISTRICT_INDUSTRIAL = 2;
+
+/**
+ * Which kind of neighbourhood this is. Varying only building *height* leaves
+ * every block the same sort of place at a different size; a district decides
+ * how tall it builds, how much of it is left as open ground, and — through
+ * that — how it feels to walk through.
+ */
+export function districtAt(wx: number, wy: number, seed: number): number {
+  const n = norm01(fbm2(wx * 0.0026 + 41.3, wy * 0.0026 - 17.9, seed + 9101, 3));
+  return n > 0.62 ? DISTRICT_DOWNTOWN : n > 0.28 ? DISTRICT_RESIDENTIAL : DISTRICT_INDUSTRIAL;
+}
+
 /** The lot a block-interior tile belongs to, as a stable integer pair. */
 function lotOf(wx: number, wy: number, seed: number, s: StreetInfo): [number, number] {
   // Measured from the block's own edge rather than from the world origin, so
@@ -353,6 +372,25 @@ export function sampleCity(
     out.bed = ground;
     out.surface = pal.road;
     out.side = pal.road;
+
+    // Markings. The carriageway runs along whichever axis the tile is *far*
+    // from its street line on, so the centre line and the crossing stripes
+    // both follow from the same pair of distances.
+    if (!street.junction) {
+      const alongX = street.dy < street.dx;
+      const acrossRoad = alongX ? street.dy : street.dx;
+      const alongRoad = alongX ? wx : wy;
+      const halfAcross = alongX ? street.halfY : street.halfX;
+      const toJunction = alongX ? street.dx : street.dy;
+      const halfJunction = alongX ? street.halfX : street.halfY;
+
+      if (toJunction < halfJunction + 2.2) {
+        // A crossing just off the junction, striped across the road.
+        if (((alongRoad % 2) + 2) % 2 === 0) out.surface = pal.paint;
+      } else if (acrossRoad < 0.5 && ((alongRoad % 6) + 6) % 6 < 3) {
+        out.surface = pal.paint;
+      }
+    }
     return;
   }
 
@@ -371,9 +409,12 @@ export function sampleCity(
 
   const base = ground + 0.18;
   const dens = density(wx, wy, seed);
+  const district = districtAt(wx, wy, seed);
 
-  // Some lots are left open. A city with no gaps in it feels like a maze.
-  if (key % 100 < 8) {
+  // Some lots are left open. A city with no gaps in it feels like a maze, and
+  // how many are left is most of what separates a downtown from a suburb.
+  const openChance = district === DISTRICT_RESIDENTIAL ? 14 : district === DISTRICT_INDUSTRIAL ? 7 : 4;
+  if (key % 100 < openChance) {
     out.height = base;
     out.bed = base;
     out.surface = pal.park;
@@ -388,7 +429,11 @@ export function sampleCity(
   // lots have to differ from each other, or there is no skyline.
   const roll = ((key >>> 7) % 1000) / 1000;
   const tallness = 0.3 + 0.7 * dens;
-  const storeys = 1 + Math.floor(Math.pow(roll, 1.7) * tallness * spec.maxStoreys);
+  // Towers belong downtown. Elsewhere the ceiling is much lower, which is what
+  // makes crossing from one district into another feel like going somewhere.
+  const cap =
+    district === DISTRICT_DOWNTOWN ? spec.maxStoreys : district === DISTRICT_RESIDENTIAL ? 5 : 3;
+  const storeys = 1 + Math.floor(Math.pow(roll, 1.7) * tallness * cap);
 
   // Lots are built to their boundaries, sharing party walls the way a real
   // block does. The variation between neighbours is what reads as separate
@@ -443,6 +488,7 @@ const DOWNTOWN: CityThemeSpec = {
     { color: '#5cff9e', pattern: 'panel', roughness: 0.2 },
   ],
   park: { color: '#5f7a52', pattern: 'noise', roughness: 0.6 },
+  paint: { color: '#cdc9b4', pattern: 'solid', roughness: 0.15 },
 
   exposure: 1.5,
   fogColor: '#9fb0c2',

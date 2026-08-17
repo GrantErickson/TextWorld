@@ -1100,6 +1100,25 @@ export class World {
           continue;
         }
 
+        // Parked cars against the kerb. An empty kerb is one of the strongest
+        // tells that a street is scenery rather than somewhere people are, and
+        // a parked car costs no simulation at all.
+        if (across <= kerb + 0.5) {
+          const alongAxis = info.dx < info.dy;
+          const park = hashi(Math.floor(along / 6), alongAxis ? info.ix : info.iy, this.seed ^ 0x9a12);
+          if (((along % 6) + 6) % 6 === park % 3 && park % 100 < 62) {
+            const kinds = ['car', 'car', 'taxi', 'van', 'truck'];
+            this.pushProp(kinds[(park >>> 7) % kinds.length], wx + 0.5, wy + 0.5, t.height, CAR_TINTS[(park >>> 11) % CAR_TINTS.length]);
+            const parked = this.entities[this.entities.length - 1];
+            // Parked along the kerb, so it is drawn from its side.
+            if (parked) {
+              parked.dirX = alongAxis ? 0 : 1;
+              parked.dirY = alongAxis ? 1 : 0;
+            }
+            continue;
+          }
+        }
+
         // Signals, on the corner of a junction facing each approach.
         if (across > kerb + 0.5) continue;
         const cross = this.nearJunctionCorner(wx, wy, info);

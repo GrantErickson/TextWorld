@@ -11,6 +11,7 @@ import {
   CITY_THEMES,
   SIGNAL_GREEN,
   STOREY,
+  districtAt,
   makeCitySample,
   makeStreetInfo,
   sampleCity,
@@ -367,6 +368,49 @@ test('the streets are busier at rush hour than at three in the morning', () => {
   assert.ok(morning > night * 2, `rush hour ${morning} vs night ${night}`);
   assert.ok(evening > night * 2, `evening ${evening} vs night ${night}`);
   assert.ok(night >= 1, 'the city should not empty completely');
+});
+
+test('districts differ in more than the size of the same thing', () => {
+  // Varying only height leaves every block the same sort of place at a
+  // different scale. Downtown should build far higher, and the quieter
+  // districts should leave far more ground open.
+  const s = makeCitySample();
+  const info = makeStreetInfo();
+  const tallest = [0, 0, 0];
+  const openLots = [0, 0, 0];
+  for (let y = -260; y < 260; y += 2) {
+    for (let x = -260; x < 260; x += 2) {
+      const d = districtAt(x, y, SEED);
+      sampleCity(spec, x, y, SEED, s, info);
+      if (s.storeys > 0) tallest[d] = Math.max(tallest[d], s.storeys);
+      else if (!info.road && !info.walk) openLots[d]++;
+    }
+  }
+  assert.ok(tallest[0] > tallest[1] * 2, `downtown tops out at ${tallest[0]}, suburbs at ${tallest[1]}`);
+  assert.ok(tallest[1] > tallest[2], 'residential should build higher than industrial');
+  assert.ok(openLots[1] > openLots[0] * 2, 'the suburbs should be the greener district');
+});
+
+test('the roads are marked and the kerbs are parked up', () => {
+  const s = makeCitySample();
+  const info = makeStreetInfo();
+  let painted = 0;
+  for (let y = -160; y < 160; y += 2) {
+    for (let x = -160; x < 160; x += 2) {
+      sampleCity(spec, x, y, SEED, s, info);
+      if (info.road && s.surface.color.r > 190) painted++;
+    }
+  }
+  assert.ok(painted > 100, `only ${painted} road tiles carry a marking`);
+
+  const world = World.fromCity(spec, SEED);
+  const parked = world.entities.filter(
+    (e) => e.kind === ACTOR_PROP && ['car', 'taxi', 'van', 'truck', 'bus'].includes(e.def.id),
+  );
+  assert.ok(parked.length > 10, `only ${parked.length} vehicles parked at the kerb`);
+  // Parked, not abandoned in a traffic lane: each should have a heading so it
+  // is drawn from its side rather than swinging to face the viewer.
+  assert.ok(parked.every((e) => e.dirX !== 0 || e.dirY !== 0), 'a parked car has no heading');
 });
 
 test('street lamps are dark by day and lit by night', () => {
