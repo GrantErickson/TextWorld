@@ -305,11 +305,13 @@ test('you can walk onto a pavement without jumping', () => {
       for (let i = 0; i < 180; i++) cam.update(1 / 60, push, world, 40);
       if (cam.x - from < 1.5) failed++;
 
-      // And the eye must rest a full eye-height above the ground, not part of one.
-      assert.ok(
-        Math.abs(cam.z - (world.groundAt(cam.x, cam.y) + world.eyeHeight)) < 0.06,
-        `eye settled at ${cam.z.toFixed(3)}, not ${(world.groundAt(cam.x, cam.y) + world.eyeHeight).toFixed(3)}`,
-      );
+      // And the eye must rest a full eye-height above the ground, not part of
+      // one. Measured against the surface the feet are actually on: three
+      // seconds of walking is enough to cross the pavement and go in through a
+      // shop door, and the column's `height` up there is the roof.
+      const feet = cam.z - world.eyeHeight;
+      const rest = world.bedAt(cam.x, cam.y, feet) + world.eyeHeight;
+      assert.ok(Math.abs(cam.z - rest) < 0.06, `eye settled at ${cam.z.toFixed(3)}, not ${rest.toFixed(3)}`);
       break;
     }
   }
@@ -329,7 +331,9 @@ test('buildings have a ground floor distinct from the storeys above', () => {
   for (let y = -120; y < 120; y += 2) {
     for (let x = -120; x < 120; x += 2) {
       sampleCity(spec, x, y, SEED, s, info);
-      if (s.storeys <= 0) continue;
+      // Walls only. What is inside a building has no frontage to put a shop
+      // on, and its slab rims want none.
+      if (s.storeys <= 0 || s.interior) continue;
       built++;
       if (!s.sideLower) continue;
       shopfronts++;
@@ -349,7 +353,8 @@ test('buildings have a ground floor distinct from the storeys above', () => {
   // once fired and every facade came out in one skin. Asserting on the sample
   // alone cannot see that; the renderer reads the tile.
   const world = World.fromCity(spec, SEED);
-  const walls = world.tiles.filter((t) => t.storeys > 0);
+  // Outside faces only: a slab rim inside a room carries no shopfront.
+  const walls = world.tiles.filter((t) => t.storeys > 0 && !t.interior);
   assert.ok(walls.length > 0, 'no buildings in the window');
   assert.ok(
     walls.every((t) => t.sideLower !== null && t.bandZ > 0),

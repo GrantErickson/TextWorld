@@ -43,6 +43,8 @@ const AVENUE_EVERY = 4;
 const WALK = 2;
 /** Lots are subdivided to roughly this size before a building goes up. */
 const LOT = 11;
+/** Tiles of frontage between one way into a building and the next. */
+const DOOR_EVERY = 6;
 
 export interface CityThemeSpec {
   id: string;
@@ -63,6 +65,10 @@ export interface CityThemeSpec {
   park: MapSourceMaterial;
   /** Road markings: centre lines and crossing stripes. */
   paint: MapSourceMaterial;
+  /** Inside a building: the floor underfoot, the slab overhead, its rim. */
+  interiorFloor: MapSourceMaterial;
+  interiorCeiling: MapSourceMaterial;
+  interiorWall: MapSourceMaterial;
 
   /** Ground relief. A city is nearly flat, but not perfectly. */
   amplitude: number;
@@ -83,6 +89,11 @@ export interface CitySample extends TerrainSample {
   storeys: number;
   /** True for a tile inside a building's footprint rather than on its wall. */
   interior: boolean;
+  /**
+   * Underside of whatever is overhead. Open ground has no ceiling and never
+   * asks for this; a room does, and it is not the same surface as its roof.
+   */
+  ceiling: Material;
 }
 
 export function makeCitySample(): CitySample {
@@ -100,6 +111,7 @@ export function makeCitySample(): CitySample {
     bandZ: 0,
     storeys: 0,
     interior: false,
+    ceiling: DEFAULT_ROAD,
   };
 }
 
@@ -113,6 +125,9 @@ interface Palette {
   glass: Material;
   park: Material;
   paint: Material;
+  interiorFloor: Material;
+  interiorCeiling: Material;
+  interiorWall: Material;
 }
 
 const palettes = new WeakMap<CityThemeSpec, Palette>();
@@ -142,6 +157,9 @@ function paletteFor(spec: CityThemeSpec): Palette {
       glass: mat(spec.glass),
       park: mat(spec.park),
       paint: mat(spec.paint),
+      interiorFloor: mat(spec.interiorFloor),
+      interiorCeiling: mat(spec.interiorCeiling),
+      interiorWall: mat(spec.interiorWall),
     };
     palettes.set(spec, p);
   }
@@ -167,22 +185,28 @@ export function streetLine(i: number, axis: number, seed: number): number {
 }
 
 /**
- * The nearest street line to `v`, and how far away it is. Only the three
- * candidate indices around `v` can possibly be nearest, since the jitter is
- * bounded well below the spacing.
+ * The nearest street line to `v`, and how far away it is, left in `nsIndex`
+ * and `nsDist`. Only the three candidate indices around `v` can possibly be
+ * nearest, since the jitter is bounded well below the spacing.
+ *
+ * Answering through a pair of module variables rather than a returned object
+ * is the difference between allocating nothing and allocating twice per tile:
+ * classifying a building's tiles asks its four neighbours which lot they are
+ * in, so this now runs ten times per tile of a window rather than twice.
  */
-function nearestStreet(v: number, axis: number, seed: number): { index: number; dist: number } {
+let nsIndex = 0;
+let nsDist = 0;
+function nearestStreet(v: number, axis: number, seed: number): void {
   const guess = Math.round(v / BLOCK);
-  let index = guess;
-  let dist = Infinity;
+  nsIndex = guess;
+  nsDist = Infinity;
   for (let k = guess - 1; k <= guess + 1; k++) {
     const d = Math.abs(v - streetLine(k, axis, seed));
-    if (d < dist) {
-      dist = d;
-      index = k;
+    if (d < nsDist) {
+      nsDist = d;
+      nsIndex = k;
     }
   }
-  return { index, dist };
 }
 
 export interface StreetInfo {
@@ -202,23 +226,27 @@ export interface StreetInfo {
 }
 
 export function streetAt(wx: number, wy: number, seed: number, out: StreetInfo): void {
-  const sx = nearestStreet(wx + 0.5, 0, seed);
-  const sy = nearestStreet(wy + 0.5, 1, seed);
-  const hx = halfWidth(sx.index);
-  const hy = halfWidth(sy.index);
+  nearestStreet(wx + 0.5, 0, seed);
+  const ix = nsIndex;
+  const dx = nsDist;
+  nearestStreet(wy + 0.5, 1, seed);
+  const iy = nsIndex;
+  const dy = nsDist;
+  const hx = halfWidth(ix);
+  const hy = halfWidth(iy);
 
-  const onRoadX = sx.dist <= hx;
-  const onRoadY = sy.dist <= hy;
+  const onRoadX = dx <= hx;
+  const onRoadY = dy <= hy;
 
-  out.dx = sx.dist;
-  out.dy = sy.dist;
-  out.ix = sx.index;
-  out.iy = sy.index;
+  out.dx = dx;
+  out.dy = dy;
+  out.ix = ix;
+  out.iy = iy;
   out.halfX = hx;
   out.halfY = hy;
   out.road = onRoadX || onRoadY;
   out.junction = onRoadX && onRoadY;
-  out.walk = !out.road && (sx.dist <= hx + WALK || sy.dist <= hy + WALK);
+  out.walk = !out.road && (dx <= hx + WALK || dy <= hy + WALK);
 }
 
 export function makeStreetInfo(): StreetInfo {
@@ -327,6 +355,53 @@ export function districtAt(wx: number, wy: number, seed: number): number {
   return n > 0.62 ? DISTRICT_DOWNTOWN : n > 0.28 ? DISTRICT_RESIDENTIAL : DISTRICT_INDUSTRIAL;
 }
 
+/** Returned by `lotIdAt` for anything that is street rather than block. */
+export const LOT_STREET = 0;
+
+/**
+ * Which lot a tile belongs to, as a stable nonzero key, or `LOT_STREET` on a
+ * carriageway or a pavement.
+ *
+ * This is what decides a building's walls from its inside, and it decides it
+ * by asking the four neighbours rather than from the lot's rectangle. The
+ * rectangle looks like it should be enough — a lot is LOT tiles square, so the
+ * inside is everything but the outermost ring — and it is wrong in the one
+ * place it matters. Lots are measured from whichever street is *nearer*, so a
+ * block is subdivided from both edges at once and the two grids meet somewhere
+ * in the middle. The last lot on each side is whatever width is left over, its
+ * far edge is not a lot boundary, and every tile along that seam passes the
+ * rectangle test while its neighbour across the seam belongs to a different
+ * building. Hollowing those opens a hole between two buildings that would then
+ * share one interior at two different ceiling heights.
+ *
+ * Asking the neighbour for its lot key gets that right by construction, and
+ * needs no district or density noise: a lot is uniformly built or open, so two
+ * tiles of the same lot are always both built.
+ */
+export function lotIdAt(wx: number, wy: number, seed: number): number {
+  const cx = wx + 0.5;
+  const cy = wy + 0.5;
+  nearestStreet(cx, 0, seed);
+  const ix = nsIndex;
+  const dx = nsDist;
+  nearestStreet(cy, 1, seed);
+  const iy = nsIndex;
+  const dy = nsDist;
+  const hx = halfWidth(ix);
+  const hy = halfWidth(iy);
+  if (dx <= hx + WALK || dy <= hy + WALK) return LOT_STREET;
+
+  const lineX = streetLine(ix, 0, seed);
+  const lineY = streetLine(iy, 1, seed);
+  const edgeX = lineX + (cx > lineX ? hx + WALK : -(hx + WALK));
+  const edgeY = lineY + (cy > lineY ? hy + WALK : -(hy + WALK));
+  const lx = Math.floor((cx - edgeX) / LOT);
+  const ly = Math.floor((cy - edgeY) / LOT);
+  // Same expression as the lot key in sampleCity, forced nonzero so it can
+  // never collide with LOT_STREET.
+  return hashi(lx * 31 + ix * 7, ly * 17 + iy * 13, seed + 555) | 1;
+}
+
 /** The lot a block-interior tile belongs to, as a stable integer pair. */
 function lotOf(wx: number, wy: number, seed: number, s: StreetInfo): [number, number] {
   // Measured from the block's own edge rather than from the world origin, so
@@ -358,6 +433,7 @@ export function sampleCity(
 
   out.storeys = 0;
   out.interior = false;
+  out.ceiling = pal.roof;
   out.sideLower = null;
   out.bandZ = 0;
   out.solid = false;
@@ -451,6 +527,7 @@ export function sampleCity(
   out.height = base + storeys * STOREY;
   out.bed = out.height;
   out.surface = pal.roof;
+  out.ceiling = pal.roof;
   out.side = pal.facades[(key >>> 13) % pal.facades.length];
 
   // The ground floor is its own thing: a shopfront, and on some lots a lit
@@ -459,6 +536,59 @@ export function sampleCity(
   out.sideLower =
     shopRoll < 22 ? pal.signs[(key >>> 3) % pal.signs.length] : pal.shopfronts[(key >>> 5) % pal.shopfronts.length];
   out.bandZ = base + STOREY * 0.92;
+
+  // ---- wall or inside?
+  //
+  // A tile is inside the building when all four of its neighbours are the same
+  // lot; anything with a neighbour elsewhere is a wall. Two adjacent built lots
+  // therefore each keep their own wall and the party wall comes out two tiles
+  // thick, which is what stops a whole block from becoming one room.
+  const mine = key | 1;
+  const nW = lotIdAt(wx - 1, wy, seed);
+  const nE = lotIdAt(wx + 1, wy, seed);
+  const nN = lotIdAt(wx, wy - 1, seed);
+  const nS = lotIdAt(wx, wy + 1, seed);
+
+  if (nW === mine && nE === mine && nN === mine && nS === mine) {
+    out.interior = true;
+  } else {
+    // A way in. The opening goes in a wall with the street on exactly one side
+    // and more of this building on the other, so it always leads somewhere and
+    // is never cut into a corner.
+    //
+    // Its position is taken modulo a spacing rather than measured along the
+    // lot, because a lot's frontage is not the lot's width: blocks are
+    // subdivided from both edges and the leftover lot in the middle is
+    // whatever fits. At one opening per lot width, a short frontage could miss
+    // its only slot and the building came out sealed — a fifth of them did.
+    // Every DOOR_EVERY tiles instead, which is about two to a full frontage
+    // and is what a parade of shops looks like anyway.
+    const faces = (nW === LOT_STREET ? 1 : 0) + (nE === LOT_STREET ? 1 : 0) + (nN === LOT_STREET ? 1 : 0) + (nS === LOT_STREET ? 1 : 0);
+    if (faces === 1) {
+      const alongX = nN === LOT_STREET || nS === LOT_STREET;
+      const behind = alongX ? (nN === LOT_STREET ? nS : nN) : nW === LOT_STREET ? nE : nW;
+      const along = alongX ? wx : wy;
+      if (behind === mine && (((along % DOOR_EVERY) + DOOR_EVERY) % DOOR_EVERY) === (key >>> 17) % DOOR_EVERY) {
+        out.interior = true;
+      }
+    }
+  }
+
+  if (out.interior) {
+    // Standing room. `height` stays the roof, because that is what the column
+    // tops out at and what the spans are derived from; `bed` is the floor you
+    // actually walk on, which is what collision and the eye ride.
+    out.solid = false;
+    out.bed = base;
+    out.surface = pal.interiorFloor;
+    out.ceiling = pal.interiorCeiling;
+    out.side = pal.interiorWall;
+    // No shopfront on a slab edge: the band is a thing the *outside* of a
+    // building has, and applying it in here paints the ceiling's rim with a
+    // lit sign.
+    out.sideLower = null;
+    out.bandZ = 0;
+  }
 }
 
 // ------------------------------------------------------------------- themes
@@ -496,6 +626,13 @@ const DOWNTOWN: CityThemeSpec = {
   ],
   park: { color: '#5f7a52', pattern: 'noise', roughness: 0.6 },
   paint: { color: '#cdc9b4', pattern: 'solid', roughness: 0.15 },
+  // Inside. Lighter than anything outside, because a room is lit by one lamp
+  // rather than by the sky and needs the reflectance to make up the
+  // difference — a dark floor in here lands on the bottom glyph and the room
+  // reads as a hole rather than as somewhere you are standing.
+  interiorFloor: { color: '#a89a86', pattern: 'tile', roughness: 0.35 },
+  interiorCeiling: { color: '#b9b4ac', pattern: 'panel', roughness: 0.25 },
+  interiorWall: { color: '#b0a89c', pattern: 'panel', roughness: 0.4 },
 
   exposure: 1.5,
   fogColor: '#9fb0c2',

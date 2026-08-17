@@ -72,6 +72,22 @@ const MIN_POCKET = 8;
 /** Props and lights are only instantiated near the player. */
 const LIGHT_CULL = 40;
 const PROP_CULL = 28;
+/**
+ * Room lamps are kept much tighter than street lamps. A street lamp forty
+ * tiles off is still pooling on a pavement you can see; a room lamp that far
+ * away is behind a wall, so it costs a shadow bake and lights nothing. It has
+ * to clear SHIFT_THRESHOLD with room to spare, though: lights are only rebuilt
+ * when the window recenters, so anything under that leaves rooms you have
+ * already walked into unlit until it does.
+ */
+const INTERIOR_LIGHT_CULL = 22;
+/**
+ * Ceiling on how many lights a city window may hold at once. Every one of them
+ * is a per-tile line-of-sight bake and a term in the inner shading loop, so
+ * this is the number that decides whether the frame stays inside a millisecond
+ * or two.
+ */
+const LIGHT_BUDGET = 64;
 
 /**
  * Biggest height change the player can walk over, in tiles. Terrain terraces
@@ -282,6 +298,8 @@ export class World {
   private readonly carried: Entity[] = [];
   /** Where the shelters are, so buses can pull in without hunting for them. */
   private readonly busStops: Array<[number, number]> = [];
+  /** Reused by the collision queries, which run several times a frame. */
+  private readonly collideSpans: Span[] = [];
   private readonly sample: TerrainSample = makeSample();
 
   private constructor(width: number, height: number, tiles: Tile[]) {
@@ -409,11 +427,36 @@ export class World {
   /**
    * Elevation of the solid ground, under any water. This is what the legs
    * stand on: `groundAt` would have you walking on the surface of a lake.
+   *
+   * `feetZ` is what makes a building with an inside work. A column with one
+   * span has one answer and does not need it — which is why every other world
+   * can leave it out — but a hollow one has a surface per storey, and which of
+   * them you are standing on is decided by where your feet already are. Get
+   * this wrong in the obvious way, by reporting the column's single `bed`, and
+   * you either cannot walk into the building at all or you fall through its
+   * roof the moment you fly onto it.
    */
-  bedAt(x: number, y: number): number {
+  bedAt(x: number, y: number, feetZ?: number): number {
     if (!this.terrain) return 0;
     const t = this.tileAt(Math.floor(x), Math.floor(y));
-    return t ? t.bed : 0;
+    if (!t) return 0;
+    return feetZ === undefined ? t.bed : this.surfaceOf(t, feetZ);
+  }
+
+  /**
+   * The top of the highest span of `t` that is not above `feetZ`. Falls back
+   * to the lowest span, so a body that has somehow got under the ground floor
+   * is stood back on it rather than falling for ever.
+   */
+  private surfaceOf(t: Tile, feetZ: number): number {
+    if (!t.interior || t.storeys <= 0) return t.bed;
+    const n = this.spansOf(t, this.collideSpans);
+    let floor = this.collideSpans[0].hi;
+    for (let i = 1; i < n; i++) {
+      const hi = this.collideSpans[i].hi;
+      if (hi <= feetZ + 0.06 && hi > floor) floor = hi;
+    }
+    return floor;
   }
 
   /** Depth of standing water over a spot; 0 on dry land and indoors. */
@@ -468,7 +511,9 @@ export class World {
         const dx = toX - cx;
         const dy = toY - cy;
         if (dx * dx + dy * dy >= radius * radius) continue;
-        if (t.bed - base > STEP_HEIGHT) return false;
+        // The surface you *would be standing on* in that tile, not the
+        // column's single bed: inside a building those differ by a storey.
+        if (this.surfaceOf(t, base) - base > STEP_HEIGHT) return false;
       }
     }
     return true;
@@ -1016,8 +1061,12 @@ export class World {
           type: s.solid ? TILE_WALL : TILE_EMPTY,
           wall: s.solid ? s.side : null,
           floor: s.surface,
-          ceiling: s.surface,
-          sky: true,
+          ceiling: s.ceiling,
+          // A tile with something solid over it is not open to the weather.
+          // Nothing reads this on the city's path — the flag is for the
+          // flat-floor passes — but a room flagged as open sky is a hole in
+          // the ceiling waiting for the first caller that does.
+          sky: !s.interior,
           doorId: -1,
           ao: 1,
           height: s.height,
@@ -1085,8 +1134,10 @@ export class World {
     const by0 = Math.floor((py - LIGHT_CULL) / spacing);
     const by1 = Math.floor((py + LIGHT_CULL) / spacing);
 
-    for (let by = by0; by <= by1 && this.lights.length < 42; by++) {
-      for (let bx = bx0; bx <= bx1 && this.lights.length < 42; bx++) {
+    // Street lamps take the first half of the budget; rooms get what is left.
+    const lampCap = LIGHT_BUDGET - 24;
+    for (let by = by0; by <= by1 && this.lights.length < lampCap; by++) {
+      for (let bx = bx0; bx <= bx1 && this.lights.length < lampCap; bx++) {
         const h = hashi(bx, by, this.seed ^ 0x5a1d);
         const spot = this.nearestPavement(bx * spacing + (h % spacing), by * spacing + ((h >>> 9) % spacing), 4);
         if (!spot) continue;
@@ -1104,7 +1155,47 @@ export class World {
       }
     }
 
+    this.lightInteriors(px, py);
     this.advanceClock(0);
+  }
+
+  /**
+   * A lamp inside every room near the player.
+   *
+   * A room has no sun in it and the city's ambient is set for a street, so
+   * without this an interior is one flat wash — measured at 73% of the frame
+   * on a single glyph, which is the mid-grey mush this renderer exists to
+   * avoid. The radius is deliberately smaller than the room, because a light
+   * that reaches the far wall lights everything evenly and reads as fog: it is
+   * the falloff that makes the space read as a space.
+   *
+   * They do not answer to the clock. A shop is as dark at noon as at midnight
+   * with the door shut, which is the opposite of what a street lamp wants.
+   */
+  private lightInteriors(px: number, py: number): void {
+    const spacing = 6;
+    const bx0 = Math.floor((px - INTERIOR_LIGHT_CULL) / spacing);
+    const bx1 = Math.floor((px + INTERIOR_LIGHT_CULL) / spacing);
+    const by0 = Math.floor((py - INTERIOR_LIGHT_CULL) / spacing);
+    const by1 = Math.floor((py + INTERIOR_LIGHT_CULL) / spacing);
+
+    for (let by = by0; by <= by1 && this.lights.length < LIGHT_BUDGET; by++) {
+      for (let bx = bx0; bx <= bx1 && this.lights.length < LIGHT_BUDGET; bx++) {
+        // Snapped to the lattice point itself rather than hunted for: a search
+        // would pull several lattice points onto the same tile of a small room
+        // and stack lights on top of each other.
+        const x = bx * spacing + 3;
+        const y = by * spacing + 3;
+        const t = this.tileAt(x, y);
+        if (!t || !t.interior) continue;
+        const dx = x + 0.5 - px;
+        const dy = y + 0.5 - py;
+        if (dx * dx + dy * dy > INTERIOR_LIGHT_CULL * INTERIOR_LIGHT_CULL) continue;
+        const light = makeLight(x + 0.5, y + 0.5, 5.5, '#ffe6c4', 1.5, 0, 0, -1);
+        light.z = t.bed + STOREY * 0.72;
+        this.lights.push(light);
+      }
+    }
   }
 
   private pushProp(sprite: string, x: number, y: number, z: number, tint: RGB | null): void {

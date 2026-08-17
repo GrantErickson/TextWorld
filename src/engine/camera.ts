@@ -186,8 +186,9 @@ export class Camera {
   /** Gravity, jumping, swimming and flight. */
   private updateVertical(dt: number, input: MoveInput, world: World): void {
     // The bed, not the surface: standing on `groundAt` in a lake would have
-    // you walking on the water. Depth is what decides between the two.
-    const groundZ = world.bedAt(this.x, this.y);
+    // you walking on the water. Depth is what decides between the two. Passing
+    // the feet is what picks a storey out of a column that has several.
+    const groundZ = world.bedAt(this.x, this.y, this.z - world.eyeHeight);
     const depth = world.waterDepthAt(this.x, this.y);
     // world.eyeHeight, not the constant: mixing the two puts the eye at one
     // height and reports the feet at another, so the body ends up standing
