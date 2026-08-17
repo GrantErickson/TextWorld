@@ -7,10 +7,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { CITY_THEMES, STOREY, makeCitySample, makeStreetInfo, sampleCity, streetAt } from './city.ts';
+import {
+  CITY_THEMES,
+  SIGNAL_GREEN,
+  STOREY,
+  makeCitySample,
+  makeStreetInfo,
+  sampleCity,
+  signalFor,
+  streetAt,
+} from './city.ts';
 import { World } from './world.ts';
 import { clockString, makeSkyState, skyAt } from './daynight.ts';
-import { TILE_EMPTY } from './types.ts';
+import { ACTOR_CAR, ACTOR_PROP, TILE_EMPTY } from './types.ts';
 
 const SEED = 7;
 const spec = CITY_THEMES.city;
@@ -175,6 +184,93 @@ test('the clock reads as a time and wraps', () => {
   assert.equal(clockString(0.5), '12:00');
   assert.equal(clockString(0.25), '06:00');
   assert.equal(clockString(1.25), '06:00');
+});
+
+test('the two axes of a junction are never green together', () => {
+  // The one property a signal must have. It is a pure function of the clock,
+  // so this is exhaustively checkable rather than a matter of hoping.
+  for (let j = 0; j < 40; j++) {
+    const ix = (j * 7) % 23;
+    const iy = (j * 13) % 19;
+    let sawX = false;
+    let sawY = false;
+    for (let step = 0; step < 400; step++) {
+      const time = step * 0.05;
+      const x = signalFor(ix, iy, true, time, SEED);
+      const y = signalFor(ix, iy, false, time, SEED);
+      assert.ok(
+        !(x === SIGNAL_GREEN && y === SIGNAL_GREEN),
+        `junction ${ix},${iy} let both axes go at t=${time.toFixed(2)}`,
+      );
+      if (x === SIGNAL_GREEN) sawX = true;
+      if (y === SIGNAL_GREEN) sawY = true;
+    }
+    assert.ok(sawX && sawY, `junction ${ix},${iy} never released one of its axes`);
+  }
+});
+
+test('traffic drives on the road, and stops and starts', () => {
+  const world = World.fromCity(spec, SEED);
+  const cars = () => world.entities.filter((e) => e.kind === ACTOR_CAR);
+  assert.ok(cars().length > 5, 'no traffic on the streets');
+
+  let stopped = 0;
+  let moving = 0;
+  for (let i = 0; i < 900; i++) {
+    world.update(1 / 60, world.spawnX, world.spawnY);
+    for (const c of cars()) {
+      if (c.speed < 0.05) stopped++;
+      else if (c.speed > 3) moving++;
+    }
+  }
+  assert.ok(moving > 0, 'the traffic never moved');
+  assert.ok(stopped > 0, 'no car ever stopped, so the signals do nothing');
+
+  // And they should still be on a carriageway, not through a shopfront.
+  let offRoad = 0;
+  for (const c of cars()) {
+    const t = world.tileAt(Math.floor(c.x), Math.floor(c.y));
+    if (!t || t.type !== TILE_EMPTY || t.storeys > 0) offRoad++;
+  }
+  assert.ok(offRoad <= cars().length * 0.2, `${offRoad} of ${cars().length} cars left the road`);
+});
+
+test('actors survive the window moving under them', () => {
+  // Props are rebuilt from the map every time the window shifts, which is
+  // invisible because they are a pure function of position. Actors are not:
+  // rebuilding them would teleport every car back to a lattice point every
+  // few seconds of walking.
+  const world = World.fromCity(spec, SEED);
+  for (let i = 0; i < 120; i++) world.update(1 / 60, world.spawnX, world.spawnY);
+
+  // Identity, not position: the cars are still driving during the frame the
+  // window moves, so their coordinates legitimately change either way.
+  const before = new Set(world.entities.filter((e) => e.kind === ACTOR_CAR));
+  assert.ok(before.size > 0);
+
+  const originX = world.originX;
+  world.update(1 / 60, world.spawnX + 30, world.spawnY);
+  assert.notEqual(world.originX, originX, 'expected the window to move');
+
+  const survivors = world.entities.filter((e) => before.has(e)).length;
+  assert.ok(survivors > 0, 'every car was rebuilt when the window moved');
+});
+
+test('the city plants trees on its pavements and in its parks', () => {
+  const world = World.fromCity(spec, SEED);
+  const props = world.entities.filter((e) => e.kind === ACTOR_PROP);
+  const byKind = new Map<string, number>();
+  for (const p of props) byKind.set(p.def.id, (byKind.get(p.def.id) ?? 0) + 1);
+  assert.ok((byKind.get('tree') ?? 0) > 10, 'a city with no street trees');
+  assert.ok((byKind.get('stoplight') ?? 0) > 0, 'no signals at any junction');
+  assert.ok((byKind.get('lamppost') ?? 0) > 0, 'no lamp posts');
+
+  // Nothing should be standing in the carriageway.
+  const info = makeStreetInfo();
+  for (const p of props) {
+    streetAt(Math.floor(p.x), Math.floor(p.y), SEED, info);
+    assert.equal(info.road, false, `a ${p.def.id} is standing in the road at (${p.x}, ${p.y})`);
+  }
 });
 
 test('street lamps are dark by day and lit by night', () => {

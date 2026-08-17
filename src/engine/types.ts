@@ -168,13 +168,35 @@ export interface SpriteDef {
   height: number;
   /** Height of the sprite's bottom edge above the floor, in tiles. */
   base: number;
+  /**
+   * Apply an entity's tint only to the self-lit ('@') cells. A traffic signal
+   * needs its lamp to change colour without its post changing with it.
+   */
+  tintLitOnly?: boolean;
   /** Which glyph ramp draws this sprite in `material` mode. */
   glyphSlot: number;
 }
 
+/** Entities that just stand there, and entities that go somewhere. */
+export const ACTOR_PROP = 0;
+export const ACTOR_CAR = 1;
+export const ACTOR_PERSON = 2;
+
 export interface Entity {
   index: number;
   def: SpriteDef;
+  /**
+   * What drives this entity. Props are regenerated from the map every time the
+   * window moves, since they are a pure function of position; actors are
+   * carried across, because a car that teleported back to its lattice position
+   * every few seconds of walking would be worse than no traffic at all.
+   */
+  kind: number;
+  /** Heading, for actors. Axis-aligned for anything on a street. */
+  dirX: number;
+  dirY: number;
+  /** Speed this actor would travel at with nothing in its way. */
+  cruise: number;
   x: number;
   y: number;
   /** Ground elevation the sprite stands on. 0 for indoor maps. */

@@ -705,6 +705,11 @@ export class Renderer {
       const cr = tint.r / 255;
       const cg = tint.g / 255;
       const cb = tint.b / 255;
+      // A signal tints only its lamp; everything else tints whole.
+      const litOnly = def.tintLitOnly === true && e.tint !== null;
+      const br = def.color.r / 255;
+      const bg = def.color.g / 255;
+      const bb = def.color.b / 255;
 
       const xStart = Math.max(0, Math.ceil(colL - 0.5));
       const xEnd = Math.min(cols - 1, Math.floor(colR - 0.5));
@@ -737,9 +742,10 @@ export class Renderer {
           // Art density scales the colour rather than picking a glyph
           // directly, which lets the shared shading stage choose the character
           // and keeps sprites reacting to light exactly like walls do.
-          let r = cr * (acc.r * density + selfLit);
-          let g = cg * (acc.g * density + selfLit);
-          let b = cb * (acc.b * density + selfLit);
+          const lit = !litOnly || ch === '@';
+          let r = (lit ? cr : br) * (acc.r * density + selfLit);
+          let g = (lit ? cg : bg) * (acc.g * density + selfLit);
+          let b = (lit ? cb : bb) * (acc.b * density + selfLit);
 
           if (fogF > 0) {
             r += (fr - r) * fogF;

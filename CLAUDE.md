@@ -152,8 +152,19 @@ Per column, each tile can contribute:
 2. **Done.** Day and night: `daynight.ts`. One value, `world.timeOfDay`, drives
    the sun's position and colour, ambient, sky, fog, stars and whether the
    lamps are lit. `T` scrubs an hour, shift-`T` back.
-3. **Not started.** Traffic and crowds: cars in lanes obeying stoplights,
-   people on sidewalks.
+3. **Done.** Traffic, crowds and street furniture. Signals are a pure function
+   of the junction's coordinates and the clock — no light objects to step, and
+   every driver approaching a junction agrees about it without coordinating.
+   Cars keep a lane, brake for a red and queue behind the car in front; people
+   walk the pavements and turn round at the end of one. Trees line the kerbs at
+   intervals and fill the parks, with lamp posts and benches among them.
+
+   The one thing worth remembering: **props are rebuilt on every window move,
+   actors are carried across.** Props are a pure function of position, so
+   rebuilding them is invisible; rebuilding actors teleports every car back to
+   a lattice point every few seconds of walking. The snapshot has to be taken
+   *before* the entity list is cleared, which is a mistake that fails silently
+   and which `city.test.ts` now checks by object identity.
 4. **Not started.** Seamless interiors: the span renderer described above,
    floors, stairs, doors and windows. `Tile.storeys` and `Tile.interior` are
    already generated and carried through, so the data this needs exists.

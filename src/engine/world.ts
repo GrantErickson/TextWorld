@@ -1,5 +1,5 @@
 import type { Door, Entity, Light, Material, RGB, Tile, TileType } from './types.ts';
-import { TILE_DOOR, TILE_EMPTY, TILE_WALL } from './types.ts';
+import { ACTOR_CAR, ACTOR_PERSON, ACTOR_PROP, TILE_DOOR, TILE_EMPTY, TILE_WALL } from './types.ts';
 import {
   DEFAULT_CEILING,
   DEFAULT_FLOOR,
@@ -23,12 +23,19 @@ import type { SkyState } from './daynight.ts';
 import { DAY_LENGTH, makeSkyState, skyAt } from './daynight.ts';
 import type { CitySample, CityThemeSpec, StreetInfo } from './city.ts';
 import {
+  SIGNAL_AMBER,
+  SIGNAL_GREEN,
   cityThemeIds,
+  laneOffset,
   lookupCityTheme,
   makeCitySample,
   makeStreetInfo,
+  nearestLineIndex,
+  nextCrossing,
   sampleCity,
+  signalFor,
   streetAt,
+  streetLine,
 } from './city.ts';
 
 /**
@@ -72,6 +79,37 @@ const PROP_CULL = 28;
 const STEP_HEIGHT = 0.55;
 /** Outdoors, vegetation is placed further out: it is the view, not decoration. */
 const TERRAIN_PROP_CULL = 46;
+
+/**
+ * Traffic and pedestrians are carried across a window move rather than rebuilt,
+ * so they are culled on their own generous radius: an actor that vanished at
+ * the edge of the prop range would pop out of existence in plain sight.
+ */
+const ACTOR_CULL = 58;
+const TARGET_CARS = 26;
+const TARGET_PEOPLE = 34;
+
+/** Planting reads better tinted to its setting than in the sprite's own green. */
+const STREET_TREE: RGB = rgb(96, 132, 82);
+const PARK_TREE: RGB = rgb(104, 150, 84);
+const CAR_TINTS: RGB[] = [
+  rgb(178, 72, 66),
+  rgb(212, 212, 216),
+  rgb(48, 62, 96),
+  rgb(38, 40, 44),
+  rgb(158, 152, 140),
+  rgb(72, 106, 92),
+  rgb(196, 158, 72),
+];
+const SIGNAL_RED_TINT: RGB = rgb(255, 70, 58);
+const SIGNAL_AMBER_TINT: RGB = rgb(255, 176, 48);
+const SIGNAL_GREEN_TINT: RGB = rgb(96, 236, 118);
+const PERSON_TINTS: RGB[] = [
+  rgb(196, 170, 146),
+  rgb(150, 126, 108),
+  rgb(206, 190, 176),
+  rgb(122, 104, 92),
+];
 
 interface TileTemplate {
   type: TileType;
@@ -198,6 +236,8 @@ export class World {
   private citySpec: CityThemeSpec | null = null;
   private readonly citySample: CitySample = makeCitySample();
   private readonly streetInfo: StreetInfo = makeStreetInfo();
+  /** Scratch list used when carrying actors across a window move. */
+  private readonly carried: Entity[] = [];
   private readonly sample: TerrainSample = makeSample();
 
   private constructor(width: number, height: number, tiles: Tile[]) {
@@ -362,6 +402,7 @@ export class World {
       this.stream(playerX, playerY);
       this.moveLantern(dt, playerX, playerY);
     }
+    if (this.citySpec) this.updateCityActors(dt);
     this.updateDoors(dt, playerX, playerY);
     this.updateEntities(dt);
   }
@@ -719,6 +760,10 @@ export class World {
       world.entities.push({
         index,
         def,
+        kind: ACTOR_PROP,
+        dirX: 0,
+        dirY: 0,
+        cruise: 0,
         x: e.x,
         y: e.y,
         z: 0,
@@ -885,6 +930,20 @@ export class World {
   private populateCity(px: number, py: number): void {
     const spec = this.citySpec;
     if (!spec) return;
+
+    // Snapshot the actors *before* the entity list is cleared. Reading them
+    // out afterwards finds an empty list, which silently rebuilt every car on
+    // every window move — the exact thing carrying them over exists to avoid.
+    const kept = this.carried;
+    kept.length = 0;
+    for (const e of this.entities) {
+      if (e.kind === ACTOR_PROP) continue;
+      const dx = e.x - px;
+      const dy = e.y - py;
+      if (dx * dx + dy * dy > ACTOR_CULL * ACTOR_CULL) continue;
+      kept.push(e);
+    }
+
     this.lights.length = 0;
     this.entities.length = 0;
 
@@ -892,6 +951,9 @@ export class World {
     // enough that an unlit alley is not a void, not enough to read as a torch.
     this.lights.push(makeLight(px, py, 4, '#ffe0c0', 0.16, 0, 0, -1));
     this.lanternIndex = 0;
+
+    this.placeCityProps(px, py);
+    this.stockActors(px, py);
 
     // Street lamps, on a lattice, snapped to whatever pavement is nearest the
     // sampled point. Their intensity is set by the clock, not here.
@@ -921,6 +983,314 @@ export class World {
     }
 
     this.advanceClock(0);
+  }
+
+  private pushProp(sprite: string, x: number, y: number, z: number, tint: RGB | null): void {
+    const def = lookupSprite(sprite);
+    if (!def) return;
+    this.entities.push({
+      index: this.entities.length,
+      def,
+      kind: ACTOR_PROP,
+      dirX: 0,
+      dirY: 0,
+      cruise: 0,
+      x,
+      y,
+      z,
+      tint,
+      path: [],
+      pathIndex: 0,
+      speed: 0,
+      bob: 0,
+      bobPhase: 0,
+      lightIndex: -1,
+    });
+  }
+
+  /**
+   * Street furniture and planting. All of it is a pure function of position,
+   * so it can be thrown away and rebuilt whenever the window moves without
+   * anything appearing to change.
+   */
+  private placeCityProps(px: number, py: number): void {
+    const spec = this.citySpec;
+    if (!spec) return;
+    const info = this.streetInfo;
+    const x0 = Math.floor(px - TERRAIN_PROP_CULL);
+    const x1 = Math.floor(px + TERRAIN_PROP_CULL);
+    const y0 = Math.floor(py - TERRAIN_PROP_CULL);
+    const y1 = Math.floor(py + TERRAIN_PROP_CULL);
+
+    for (let wy = y0; wy <= y1 && this.entities.length < 380; wy++) {
+      for (let wx = x0; wx <= x1 && this.entities.length < 380; wx++) {
+        const ddx = wx + 0.5 - px;
+        const ddy = wy + 0.5 - py;
+        if (ddx * ddx + ddy * ddy > TERRAIN_PROP_CULL * TERRAIN_PROP_CULL) continue;
+        const t = this.tileAt(wx, wy);
+        if (!t || t.type !== TILE_EMPTY || t.storeys > 0) continue;
+
+        streetAt(wx, wy, this.seed, info);
+
+        // Parks: the one place in a city where things grow freely.
+        if (!t.bare && !info.road && !info.walk) {
+          const h = hashi(wx, wy, this.seed ^ 0x7a11);
+          const roll = (h % 1000) / 1000;
+          if (roll < 0.1) this.pushProp('tree', wx + 0.5, wy + 0.5, t.height, PARK_TREE);
+          else if (roll < 0.16) this.pushProp('shrub', wx + 0.5, wy + 0.5, t.height, PARK_TREE);
+          else if (roll < 0.18) this.pushProp('bench', wx + 0.5, wy + 0.5, t.height, null);
+          continue;
+        }
+
+        if (!info.walk) continue;
+
+        // Street trees, at intervals along the kerb rather than scattered:
+        // a row of planting is what makes a pavement read as a street, and
+        // randomly placed trees just look like a pavement with weeds.
+        const along = info.dx < info.dy ? wy : wx;
+        const across = info.dx < info.dy ? info.dx : info.dy;
+        const kerb = info.dx < info.dy ? info.halfX : info.halfY;
+        const outer = across > kerb + 0.5;
+        if (outer && ((along % 7) + 7) % 7 === 0) {
+          const h = hashi(wx, wy, this.seed ^ 0x3c0d);
+          if (h % 10 < 7) this.pushProp('tree', wx + 0.5, wy + 0.5, t.height, STREET_TREE);
+          else this.pushProp('lamppost', wx + 0.5, wy + 0.5, t.height, null);
+          continue;
+        }
+
+        // Signals, on the corner of a junction facing each approach.
+        if (across > kerb + 0.5) continue;
+        const cross = this.nearJunctionCorner(wx, wy, info);
+        if (!cross) continue;
+        this.pushProp('stoplight', wx + 0.5, wy + 0.5, t.height, SIGNAL_RED_TINT);
+        // Remember which axis of traffic this one governs; its colour is
+        // looked up from the clock every frame.
+        const signal = this.entities[this.entities.length - 1];
+        if (signal) {
+          signal.dirX = info.dx > info.dy ? 1 : 0;
+          signal.dirY = info.dx > info.dy ? 0 : 1;
+        }
+      }
+    }
+  }
+
+  /** True on a pavement tile diagonally off the corner of a junction. */
+  private nearJunctionCorner(wx: number, wy: number, info: StreetInfo): boolean {
+    const cx = streetLine(info.ix, 0, this.seed);
+    const cy = streetLine(info.iy, 1, this.seed);
+    const dx = Math.abs(wx + 0.5 - cx);
+    const dy = Math.abs(wy + 0.5 - cy);
+    return (
+      dx > info.halfX &&
+      dx < info.halfX + 1.6 &&
+      dy > info.halfY &&
+      dy < info.halfY + 1.6
+    );
+  }
+
+  /**
+   * Keep the streets stocked with traffic and people.
+   *
+   * Actors already in range are carried over rather than rebuilt, because the
+   * window moves every few seconds of walking and a car that jumped back to a
+   * lattice position that often would read as worse than an empty city.
+   */
+  private stockActors(px: number, py: number): void {
+    const kept = this.carried;
+    for (const e of kept) {
+      e.index = this.entities.length;
+      this.entities.push(e);
+    }
+
+    let cars = 0;
+    let people = 0;
+    for (const e of kept) {
+      if (e.kind === ACTOR_CAR) cars++;
+      else people++;
+    }
+
+    for (let attempt = 0; attempt < 400 && cars < TARGET_CARS; attempt++) {
+      if (this.spawnCar(px, py, attempt)) cars++;
+    }
+    for (let attempt = 0; attempt < 400 && people < TARGET_PEOPLE; attempt++) {
+      if (this.spawnPerson(px, py, attempt)) people++;
+    }
+  }
+
+  /** Put one car on a carriageway near the player, in the correct lane. */
+  private spawnCar(px: number, py: number, salt: number): boolean {
+    const h = hashi(Math.floor(px) * 31 + salt, Math.floor(py) * 17 + salt * 7, this.seed ^ 0xca4);
+    const alongX = (h & 1) === 0;
+    const dir = (h & 2) === 0 ? 1 : -1;
+
+    // Pick a street of the other axis to drive along, near the player.
+    const info = this.streetInfo;
+    const centreAxis = alongX ? py : px;
+    const base = Math.round(centreAxis / 34) + (((h >>> 2) % 3) - 1);
+    const line = streetLine(base, alongX ? 1 : 0, this.seed);
+    const half = ((base % 4) + 4) % 4 === 0 ? 4 : 2;
+    const lane = line + laneOffset(half, dir) + 0.5;
+
+    // Somewhere along it, within the window but not on top of the player.
+    const spread = 18 + ((h >>> 5) % 22);
+    const along = (alongX ? px : py) + (dir > 0 ? -spread : spread);
+
+    const x = alongX ? along : lane;
+    const y = alongX ? lane : along;
+    const t = this.tileAt(Math.floor(x), Math.floor(y));
+    if (!t || t.type !== TILE_EMPTY) return false;
+    streetAt(Math.floor(x), Math.floor(y), this.seed, info);
+    if (!info.road) return false;
+    // Junctions are no place to appear from nothing.
+    if (info.junction) return false;
+
+    const def = lookupSprite((h >>> 9) % 5 === 0 ? 'van' : 'car');
+    if (!def) return false;
+    this.entities.push({
+      index: this.entities.length,
+      def,
+      kind: ACTOR_CAR,
+      dirX: alongX ? dir : 0,
+      dirY: alongX ? 0 : dir,
+      cruise: 5.5 + (((h >>> 12) % 100) / 100) * 3,
+      x,
+      y,
+      z: t.height,
+      tint: CAR_TINTS[(h >>> 17) % CAR_TINTS.length],
+      path: [],
+      pathIndex: 0,
+      speed: 3,
+      bob: 0,
+      bobPhase: 0,
+      lightIndex: -1,
+    });
+    return true;
+  }
+
+  /** Put one person on a pavement near the player. */
+  private spawnPerson(px: number, py: number, salt: number): boolean {
+    const h = hashi(Math.floor(px) * 13 + salt * 5, Math.floor(py) * 29 + salt, this.seed ^ 0x9e0);
+    const r = 6 + ((h >>> 3) % 30);
+    const a = ((h >>> 9) % 628) / 100;
+    const x = Math.floor(px + Math.cos(a) * r);
+    const y = Math.floor(py + Math.sin(a) * r);
+    const t = this.tileAt(x, y);
+    if (!t || t.type !== TILE_EMPTY || t.storeys > 0) return false;
+    if (!this.isPavement(x, y)) return false;
+
+    // Walk along the pavement, not across it.
+    const info = this.streetInfo;
+    const alongX = info.dy < info.dx;
+    const dir = (h & 1) === 0 ? 1 : -1;
+
+    const def = lookupSprite('person');
+    if (!def) return false;
+    this.entities.push({
+      index: this.entities.length,
+      def,
+      kind: ACTOR_PERSON,
+      dirX: alongX ? dir : 0,
+      dirY: alongX ? 0 : dir,
+      cruise: 1.1 + (((h >>> 15) % 100) / 100) * 0.7,
+      x: x + 0.5,
+      y: y + 0.5,
+      z: t.height,
+      tint: PERSON_TINTS[(h >>> 21) % PERSON_TINTS.length],
+      path: [],
+      pathIndex: 0,
+      speed: 1.2,
+      bob: 0.04,
+      bobPhase: (h % 628) / 100,
+      lightIndex: -1,
+    });
+    return true;
+  }
+
+  /**
+   * Drive the traffic and walk the people.
+   *
+   * Cars read their signal straight from the clock rather than from a light
+   * object, so every car approaching a junction agrees about it without any
+   * coordination, and follow whatever is in front of them in the same lane.
+   */
+  private updateCityActors(dt: number): void {
+    if (!this.citySpec) return;
+    const info = this.streetInfo;
+
+    for (const e of this.entities) {
+      if (e.kind === ACTOR_PROP) {
+        // Signals are props that change colour, read from the same clock the
+        // drivers read, so the lamp and the traffic can never disagree.
+        if (e.def.id === 'stoplight') {
+          const ix = nearestLineIndex(e.x, 0, this.seed);
+          const iy = nearestLineIndex(e.y, 1, this.seed);
+          const sig = signalFor(ix, iy, e.dirX !== 0, this.time, this.seed);
+          e.tint =
+            sig === SIGNAL_GREEN
+              ? SIGNAL_GREEN_TINT
+              : sig === SIGNAL_AMBER
+                ? SIGNAL_AMBER_TINT
+                : SIGNAL_RED_TINT;
+        }
+        continue;
+      }
+
+      if (e.kind === ACTOR_CAR) {
+        let want = e.cruise;
+        const alongX = e.dirX !== 0;
+        const dir = alongX ? e.dirX : e.dirY;
+        const pos = alongX ? e.x : e.y;
+
+        // Slow for the junction ahead unless it is showing green.
+        const cross = nextCrossing(pos, dir, alongX ? 0 : 1, this.seed);
+        if (cross.dist < 14) {
+          const ix = alongX ? cross.index : nearestLineIndex(e.x, 0, this.seed);
+          const iy = alongX ? nearestLineIndex(e.y, 1, this.seed) : cross.index;
+          const sig = signalFor(ix, iy, alongX, this.time, this.seed);
+          if (sig !== SIGNAL_GREEN) {
+            const stopAt = Math.max(0, cross.dist - 4.5);
+            want = Math.min(want, stopAt * 0.75);
+          }
+        }
+
+        // And for whatever is in front in the same lane.
+        for (const o of this.entities) {
+          if (o === e || o.kind !== ACTOR_CAR) continue;
+          if ((o.dirX !== e.dirX) || (o.dirY !== e.dirY)) continue;
+          const lateral = alongX ? Math.abs(o.y - e.y) : Math.abs(o.x - e.x);
+          if (lateral > 1.2) continue;
+          const ahead = ((alongX ? o.x - e.x : o.y - e.y) * dir);
+          if (ahead <= 0 || ahead > 9) continue;
+          want = Math.min(want, Math.max(0, (ahead - 3.2) * 1.4));
+        }
+
+        const accel = want > e.speed ? 4.5 : 14;
+        e.speed += Math.max(-accel * dt, Math.min(accel * dt, want - e.speed));
+        if (e.speed < 0) e.speed = 0;
+        e.x += e.dirX * e.speed * dt;
+        e.y += e.dirY * e.speed * dt;
+
+        const t = this.tileAt(Math.floor(e.x), Math.floor(e.y));
+        if (t) e.z = t.height;
+        continue;
+      }
+
+      // People: walk on, turn round at the end of the pavement.
+      const nx = e.x + e.dirX * e.cruise * dt;
+      const ny = e.y + e.dirY * e.cruise * dt;
+      const ahead = this.tileAt(Math.floor(nx + e.dirX * 0.6), Math.floor(ny + e.dirY * 0.6));
+      const walkable = ahead && ahead.type === TILE_EMPTY && ahead.storeys === 0;
+      if (walkable && this.isPavement(Math.floor(nx + e.dirX * 0.6), Math.floor(ny + e.dirY * 0.6))) {
+        e.x = nx;
+        e.y = ny;
+        const t = this.tileAt(Math.floor(e.x), Math.floor(e.y));
+        if (t) e.z = t.height;
+      } else {
+        e.dirX = -e.dirX;
+        e.dirY = -e.dirY;
+      }
+      void info;
+    }
   }
 
   /** Search outward for a pavement tile, up to `reach` tiles away. */
@@ -1087,6 +1457,10 @@ export class World {
         this.entities.push({
           index: this.entities.length,
           def,
+          kind: ACTOR_PROP,
+          dirX: 0,
+          dirY: 0,
+          cruise: 0,
           x: wx + 0.5 + jx,
           y: wy + 0.5 + jy,
           z: t.height,
@@ -1793,6 +2167,10 @@ export class World {
         this.entities.push({
           index,
           def,
+          kind: ACTOR_PROP,
+          dirX: 0,
+          dirY: 0,
+          cruise: 0,
           x: wx + 0.5 + jx,
           y: wy + 0.5 + jy,
           z: 0,

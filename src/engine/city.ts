@@ -206,6 +206,82 @@ export function makeStreetInfo(): StreetInfo {
   return { road: false, walk: false, junction: false, dx: 0, dy: 0, ix: 0, iy: 0, halfX: 0, halfY: 0 };
 }
 
+// ----------------------------------------------------------------- traffic
+
+/** Seconds in a full signal cycle at one junction. */
+const SIGNAL_CYCLE = 15;
+/** Share of the cycle each axis holds green; the remainder is all-red. */
+const GREEN_SHARE = 0.42;
+
+export const SIGNAL_RED = 0;
+export const SIGNAL_GREEN = 1;
+export const SIGNAL_AMBER = 2;
+
+/**
+ * The signal facing traffic on one axis at a junction.
+ *
+ * A pure function of the junction's coordinates and the clock: no state to
+ * store, no lights to step, and every car approaching the same junction agrees
+ * about it without having to ask anything. The phase offset per junction stops
+ * the whole city turning green at once.
+ */
+export function signalFor(ix: number, iy: number, alongX: boolean, time: number, seed: number): number {
+  const phase = ((hashi(ix, iy, seed ^ 0x51d0) % 1000) / 1000) * SIGNAL_CYCLE;
+  const t = (time + phase) % SIGNAL_CYCLE;
+  const green = SIGNAL_CYCLE * GREEN_SHARE;
+  const amber = SIGNAL_CYCLE * 0.06;
+  if (alongX) {
+    if (t < green) return SIGNAL_GREEN;
+    if (t < green + amber) return SIGNAL_AMBER;
+    return SIGNAL_RED;
+  }
+  const half = SIGNAL_CYCLE * 0.5;
+  if (t >= half && t < half + green) return SIGNAL_GREEN;
+  if (t >= half + green && t < half + green + amber) return SIGNAL_AMBER;
+  return SIGNAL_RED;
+}
+
+/** Distance to the next street line crossed travelling along `dir`, and its index. */
+export function nextCrossing(
+  v: number,
+  dir: number,
+  axis: number,
+  seed: number,
+): { dist: number; index: number } {
+  const guess = Math.round(v / BLOCK);
+  let dist = Infinity;
+  let index = guess;
+  for (let k = guess - 2; k <= guess + 2; k++) {
+    const delta = (streetLine(k, axis, seed) - v) * dir;
+    if (delta > 0 && delta < dist) {
+      dist = delta;
+      index = k;
+    }
+  }
+  return { dist, index };
+}
+
+/** Index of the street line nearest a coordinate on one axis. */
+export function nearestLineIndex(v: number, axis: number, seed: number): number {
+  const guess = Math.round(v / BLOCK);
+  let index = guess;
+  let dist = Infinity;
+  for (let k = guess - 1; k <= guess + 1; k++) {
+    const d = Math.abs(v - streetLine(k, axis, seed));
+    if (d < dist) {
+      dist = d;
+      index = k;
+    }
+  }
+  return index;
+}
+
+/** The lane centre offset from a street's middle, for the given direction. */
+export function laneOffset(half: number, dir: number): number {
+  // Drive on the right: heading positive means the lane below/right of centre.
+  return dir > 0 ? half * 0.5 : -half * 0.5;
+}
+
 // -------------------------------------------------------------------- lots
 
 /**
