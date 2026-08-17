@@ -44,6 +44,7 @@ const revertBtn = must<HTMLButtonElement>('revertBtn');
 const fontSizeEl = must<HTMLInputElement>('fontSize');
 const fontSizeOut = must<HTMLOutputElement>('fontSizeOut');
 const showRaysEl = must<HTMLInputElement>('showRays');
+const invertYEl = must<HTMLInputElement>('invertY');
 const pauseBtn = must<HTMLButtonElement>('pauseBtn');
 
 const display = new Display(screenCanvas);
@@ -213,6 +214,10 @@ fontSizeEl.addEventListener('input', () => {
 
 showRaysEl.addEventListener('change', () => {
   showRays = showRaysEl.checked;
+});
+
+invertYEl.addEventListener('change', () => {
+  input.invertY = invertYEl.checked;
 });
 
 pauseBtn.addEventListener('click', () => setPaused(!paused));
