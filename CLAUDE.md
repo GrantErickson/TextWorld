@@ -165,9 +165,9 @@ Per column, each tile can contribute:
    a lattice point every few seconds of walking. The snapshot has to be taken
    *before* the entity list is cleared, which is a mistake that fails silently
    and which `city.test.ts` now checks by object identity.
-4. **In progress — the one piece left.** Seamless interiors. Everything else
-   in the city is done. `Tile.storeys` and `Tile.interior` are generated and
-   carried through already, so the data exists.
+4. **In progress — the one piece left.** Seamless interiors. The ground floor
+   is done: you can walk in off the street, and the rooms have floors,
+   ceilings and lamps. What is left is getting *upstairs*.
 
    The order to do it in, each step leaving the tree working:
 
@@ -184,12 +184,18 @@ Per column, each tile can contribute:
       no-ops with one span per column, and both were checked that way rather
       than assumed: all 26,600 cells of a five-heading city sweep come back
       identical, and the wilds render to a byte-identical buffer.
-   3. **Next.** **Hollow the ground floor** — perimeter tiles stay solid,
-      interior tiles get a floor at pavement level and a ceiling slab a storey
-      up, with one gap in the perimeter for a door. First moment anything is
-      visibly different, and it exercises ceilings and interior lighting.
-   4. **Stack storeys, then stairs** — slabs every STOREY, a stairwell column
-      with no slabs and a stepped floor to climb.
+   3. **Done.** **Hollow the ground floor** — two thirds of a building's tiles
+      became a room with a floor at pavement level and a slab overhead, the
+      frontage got openings every `DOOR_EVERY` tiles, and collision started
+      answering per storey. You can walk in off the street. 39 of 45 buildings
+      in a window are openable and 96% of interior floor is reachable; what is
+      left is lots with no street frontage at all, which is invisible from
+      outside.
+   4. **Next.** **Stack storeys, then stairs** — slabs every STOREY, a
+      stairwell column with no slabs and a stepped floor to climb. The slabs
+      are already generated (`spansOf` stacks one per storey) and the floors
+      above the first are already hollow; what is missing is any way up, and
+      any light or material up there.
 
    Collision follows the same span list: which storey you are on is whichever
    span your feet are standing on, and `canStep` compares against the surface
@@ -197,6 +203,37 @@ Per column, each tile can contribute:
 
 Steps 1-2 fit the existing renderer, so the city is walkable and lit before the
 largest and riskiest piece starts.
+
+### Three things a building with an inside taught the rest of the engine
+
+- **Walls come from the neighbours, not from the lot rectangle.** A lot is
+  `LOT` tiles square, so the outermost ring looks like the obvious wall — and
+  it is wrong in the one place it matters. Lots are measured from whichever
+  street is *nearer*, so a block is subdivided from both edges and the two
+  grids meet in the middle; the leftover lot on each side is whatever width was
+  left, its far edge is not a lot boundary, and every tile along that seam
+  passes the rectangle test while its neighbour across the seam belongs to a
+  different building. `lotIdAt` asks each of the four neighbours for its lot
+  key instead, which needs no district or density noise because a lot is
+  uniformly built or open.
+- **Nothing gets the sun through a floor above it.** The terrain pass added a
+  directional term to every top surface and every face, because until interiors
+  every surface in a city was outdoors. An interior floor was lit by direct
+  sunlight through its own ceiling, and came out 40% brighter than that ceiling
+  — a lit floor under a void. A top surface is exposed when it is the highest
+  span of its column, an underside never is, and a face is exposed when it
+  stands above everything in the column the light would cross to reach it.
+- **A room needs a lamp, and darker surfaces than the street.** It has no sun
+  in it and the city's ambient is set for open air, so with light surfaces the
+  ambient carries the frame and everything lands in one narrow band. Both
+  failures — no lamp at all, and a lamp over a surface too light — measure as a
+  wash. `spans.test.ts` pins it by rendering a room and refusing a frame whose
+  commonest glyph holds over 60% of it.
+
+The interior lamp is the one place in this engine where the average lies. Tuned
+on frame percentiles the lamp wants to be half again brighter than it is, and a
+wall standing under one then renders as a featureless white sheet worth 0.4% of
+cells — invisible in the numbers, immediate in a screenshot.
 
 Two things about the march are worth knowing before touching it again, because
 both were wrong in the first draft of step 2b:
@@ -587,7 +624,7 @@ Data flow per frame:
 
 ## Tests
 
-`npm test` runs 85 tests via `node --test` — no framework, no browser, because
+`npm test` runs 89 tests via `node --test` — no framework, no browser, because
 the engine is DOM-free. `npm run build` runs them between the typecheck and the
 bundle.
 
