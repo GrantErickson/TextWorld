@@ -131,30 +131,60 @@ very tall columns, so nothing special is needed to keep you out of them.
 
 Water used to be a colour painted on the riverbed, so its surface followed
 every contour the bed did and a river visibly ran along the side of a hill.
-Now the surface is its own field, and it is **quantised**: `waterTable` takes
-the broad shape of the land and floors it to `pool`-tile steps. A tile is wet
-where its bed falls below that.
+The surface is now its own field, and the two things it has to do pull against
+each other: a lake must be one level however big it is, and a river must step
+downhill.
 
-Quantising a smooth field buys flatness for free. Every tile whose broad height
-lands inside one step shares one surface height *exactly*, so a body of water
-is level by construction rather than by relaxation — no flood fill, no
-iteration, and still a pure function of the coordinates, which is what lets the
-window regenerate identically when you walk back. Between two steps the surface
-drops by exactly `pool`, which is a waterfall. Level lakes and flowing drops
-are the same mechanism seen at different places on the same field.
+**A water level is a property of a basin, not of a point.** That sentence is
+the whole design, and getting it wrong is subtle enough to be worth recording.
+The first version quantised the broad land height *at the point itself*, which
+is level only in the sense that a staircase is. Measured on a real window, the
+widest lake in it came out as concentric rings, 6-5-4-4-5-6 from the middle
+outward. Of course it did: the surface was a scaled copy of the bed under it,
+so it reproduced the bowl's contour lines.
 
-Three things this got wrong first:
+So `waterTable` quantises from `basinFloor` instead — the lowest broad height
+within `BASIN_REACH`. That needs no test for which case it is in:
 
-- **One octave of broad shape, not two.** The second octave is slow enough to
-  look smooth on its own, but quantising it still crosses a step every few
-  tiles: mean pool run went from 6.5 tiles to 4.4 by adding it back. A
-  staircase of one-tile pools is technically level and reads as a rockery.
-- **Rivers are only a shape in the ground.** The channel carves the bed; it
-  does not decide there is water in it. Whether a river bed floods is decided
-  by the same table test a hollow gets. One rule for all standing water is what
-  keeps the surface level where a channel opens into a lake.
-- **Settlements are lifted clear of the table**, or villages generate
-  underwater.
+- **In a bowl**, every point sees the same floor, so the level is one value
+  across the whole thing and the lake is flat however large it is.
+- **On a slope**, the floor in view drops as you descend, so the level steps
+  down with it and a river stays a cascade of pools and falls.
+
+Four details, each of which was wrong first:
+
+- **The search runs on a *global* lattice, not a pattern centred on the query.**
+  Every point tests a subset of the same fixed set of nodes, so while the
+  lowest node stays in reach the answer is bit-identical from anywhere in the
+  basin — no flood fill, no iteration, still a pure function of coordinates.
+- **Round the level up, not down.** Rounding down can land it below the basin
+  floor it was measured from, so whether a basin held any water at all came
+  down to where its floor happened to fall modulo the step. One theme came out
+  with no water anywhere near the origin for exactly that reason.
+- **`pool` is what merges neighbouring basins.** Two basins whose floors differ
+  by less than a step snap to one level, so when they flood over their divide
+  the joined body is still level. This is the parameter that actually decides
+  large-body flatness: at `pool` 1.0 open water agreed with itself 76% of the
+  time, at 1.8 it agreed 99%.
+- **Relief is evaluated at the winning node, not at the query.** At the query it
+  drifts by a percent across a large lake, which is enough to straddle a
+  quantisation boundary and put a hairline step through the middle of one.
+
+Two things carried over and still matter. Rivers are only a *shape* in the
+ground — the channel carves the bed, and whether it floods is decided by the
+same table test a hollow gets, which is what keeps the surface level where a
+channel opens into a lake. And settlements are lifted clear of the table, or
+villages generate underwater.
+
+`basinFloor` is memoised per theme *object*, not per theme id: two specs can
+share an id and differ in amplitude — the tuning probes do exactly that — and
+an id-keyed cache hands one theme's landscape to the other. It caches a pure
+function, so clearing it is always safe.
+
+The honest limit: this cannot *merge* basins the way a real flood fill would.
+Two basins that brim over into one another share a surface only because `pool`
+rounds them together, not because anything computed a spill point. See
+"Remaining" for what would fix that properly.
 
 Depth is what makes water read as water rather than as blue paint, and the
 heightmap knows it exactly — but a material per tile would be an allocation per
@@ -543,6 +573,19 @@ text dump and obvious in a screenshot.
 Remaining / not done:
 
 - No CI.
+- **Water basins cannot merge.** Two that brim over into one another share a
+  level only because `pool` rounds them together, not because anything computed
+  a spill point. The proper fix is a depression-filling pass — priority flood
+  over blocks on a *fixed global* lattice (never the streaming window, or a lake
+  changes level as you walk toward it), each block simulated with a wide apron
+  that is then discarded, cached by block coordinate. The quantisation already
+  here would double as its seam tolerance: two blocks computing 4.03 and 4.07
+  both land on 4.0. That is also the door to what noise fundamentally cannot
+  fake — **flow accumulation**, so rivers widen downstream instead of being one
+  width everywhere, and hydraulic erosion, so valleys look eroded rather than
+  merely bumpy. It is a project rather than a patch: it trades "recompute
+  anything instantly" for "simulate and cache", wants a worker rather than the
+  frame loop, and lives or dies on the seam handling.
 - Not run on a non-Chromium browser, or on a real touch device.
 - The `material` glyph set is chosen by a material's `pattern`, so an author
   cannot pick a ramp independently of the texture. That has been fine so far

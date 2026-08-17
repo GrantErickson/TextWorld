@@ -160,7 +160,7 @@ test('a water surface is level, or falls by a whole step', () => {
         sampleTerrain(theme, x, y, SEED, a);
         if (!a.water) continue;
 
-        const steps = (a.height - theme.waterOffset) / theme.pool;
+        const steps = a.height / theme.pool;
         assert.ok(
           Math.abs(steps - Math.round(steps)) < 1e-6,
           `${theme.id}: water surface ${a.height} is not on the pool lattice`,
@@ -190,6 +190,11 @@ test('most water is flat pool rather than falls', () => {
   // The lattice assertion above is satisfied by a staircase too. A world where
   // every tile of water is its own step has technically level pools, each one
   // tile wide, and reads as a rockery. Check that pools actually have extent.
+  //
+  // NECESSARY BUT NOWHERE NEAR SUFFICIENT — see the next test. This one passed
+  // at 94% while every large lake in the world was a set of concentric rings,
+  // because a terrace is nearly all tread and very little riser. Adjacent
+  // tiles agreeing says nothing about whether a *body* is level.
   for (const theme of Object.values(TERRAIN_THEMES)) {
     const a = makeSample();
     const b = makeSample();
@@ -207,6 +212,96 @@ test('most water is flat pool rather than falls', () => {
     }
     const flat = level / Math.max(1, level + stepped);
     assert.ok(flat > 0.9, `theme "${theme.id}": only ${(flat * 100).toFixed(1)}% of water neighbours are level`);
+  }
+});
+
+test('a large body of water is one level all the way across', () => {
+  // The real assertion, and the one that matters: "large water bodies should
+  // be flat". Measured at range and only over *open* water, because that is
+  // the failure the neighbour test above cannot see.
+  //
+  // Openness is a distance transform over the water — how far a tile is from
+  // the nearest dry land. A river is everywhere close to a bank; the middle of
+  // a lake is not. A river is *supposed* to step downhill, so judging the two
+  // by the same rule would either forbid cascades or excuse terraced lakes.
+  //
+  // On the version this replaced, agreement over open water was 24%.
+  const N = 240;
+  const SPAN = 12;
+
+  for (const theme of Object.values(TERRAIN_THEMES)) {
+    const s = makeSample();
+    const wet = new Uint8Array(N * N);
+    const level = new Float64Array(N * N);
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        sampleTerrain(theme, x - N / 2, y - N / 2, SEED, s);
+        if (s.water) {
+          wet[y * N + x] = 1;
+          level[y * N + x] = s.height;
+        }
+      }
+    }
+
+    // Two-pass Chebyshev distance from dry land.
+    const open = new Int32Array(N * N);
+    for (let i = 0; i < N * N; i++) open[i] = wet[i] ? N : 0;
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const i = y * N + x;
+        if (!wet[i]) continue;
+        let m = open[i];
+        if (x > 0) m = Math.min(m, open[i - 1] + 1);
+        if (y > 0) m = Math.min(m, open[i - N] + 1);
+        if (x > 0 && y > 0) m = Math.min(m, open[i - N - 1] + 1);
+        if (x < N - 1 && y > 0) m = Math.min(m, open[i - N + 1] + 1);
+        open[i] = m;
+      }
+    }
+    for (let y = N - 1; y >= 0; y--) {
+      for (let x = N - 1; x >= 0; x--) {
+        const i = y * N + x;
+        if (!wet[i]) continue;
+        let m = open[i];
+        if (x < N - 1) m = Math.min(m, open[i + 1] + 1);
+        if (y < N - 1) m = Math.min(m, open[i + N] + 1);
+        if (x < N - 1 && y < N - 1) m = Math.min(m, open[i + N + 1] + 1);
+        if (x > 0 && y < N - 1) m = Math.min(m, open[i + N - 1] + 1);
+        open[i] = m;
+      }
+    }
+
+    let agree = 0;
+    let disagree = 0;
+    let considered = 0;
+    for (let y = SPAN; y < N - SPAN; y++) {
+      for (let x = SPAN; x < N - SPAN; x++) {
+        const i = y * N + x;
+        // At least 6 tiles from any bank: unambiguously the middle of a lake,
+        // never a river channel.
+        if (!wet[i] || open[i] < 6) continue;
+        considered++;
+        for (const [dx, dy] of [
+          [SPAN, 0],
+          [0, SPAN],
+          [-SPAN, 0],
+          [0, -SPAN],
+        ] as Array<[number, number]>) {
+          const j = i + dy * N + dx;
+          if (!wet[j]) continue;
+          if (Math.abs(level[j] - level[i]) < 1e-9) agree++;
+          else disagree++;
+        }
+      }
+    }
+
+    assert.ok(considered > 200, `theme "${theme.id}" has too little open water to judge (${considered})`);
+    const flat = agree / Math.max(1, agree + disagree);
+    assert.ok(
+      flat > 0.95,
+      `theme "${theme.id}": open water agrees with water ${SPAN} tiles away only ` +
+        `${(flat * 100).toFixed(1)}% of the time — large bodies are terraced`,
+    );
   }
 });
 

@@ -67,11 +67,11 @@ export interface TerrainThemeSpec {
    */
   pool: number;
   /**
-   * How far the water table sits below the broad shape of the land. This is
-   * the knob that decides how wet the world is: at 0 every shallow hollow
-   * fills, and pushed far enough down only the carved river channels do.
+   * How far above its basin floor a body of water fills, before quantisation.
+   * This is the knob that decides how wet the world is: raise it and hollows
+   * brim over, lower it and only the carved river channels hold water.
    */
-  waterOffset: number;
+  waterFill: number;
   /** How deep a channel a river cuts below the surrounding land. */
   riverDepth: number;
   /** Depth at which water reaches its full `waterDeep` colour. */
@@ -271,29 +271,119 @@ export function landHeight(theme: TerrainThemeSpec, wx: number, wy: number, seed
   return h;
 }
 
+/** The broad shape of the land at a point, without the surface detail. */
+function broadHeight(theme: TerrainThemeSpec, wx: number, wy: number, seed: number): number {
+  landNoise(wx, wy, seed, landScratch);
+  return (norm01(landScratch.broad) - 0.5) * theme.amplitude * reliefAt(wx, wy, seed);
+}
+
+/**
+ * Spacing of the lattice the basin search runs on, and how far it reaches.
+ *
+ * `BASIN_REACH` has to exceed the radius of a lake, because a lake is flat
+ * only while every point in it can see the same basin floor. It also must not
+ * be enormous: the further this reaches, the more often a deep hollow next
+ * door captures the level and drains a pool that should have filled.
+ */
+const BASIN_STEP = 8;
+const BASIN_REACH = 64;
+
+/**
+ * Memo for `basinFloor`, per theme and lattice cell.
+ *
+ * Keyed off the theme *object* rather than its id: two spec objects can share
+ * an id and differ in amplitude — the tuning probes do exactly that — and an
+ * id-keyed cache would quietly hand one theme's landscape to the other. It is
+ * a cache of a pure function, so clearing it is always safe.
+ */
+const basinMemo = new WeakMap<TerrainThemeSpec, Map<string, number>>();
+
+/**
+ * The lowest broad height in the neighbourhood — the floor of whatever basin
+ * this spot drains into.
+ *
+ * The search runs over a *global* lattice rather than a pattern centred on the
+ * query, and that is the entire trick. Every query point tests a subset of the
+ * same fixed set of nodes, so as long as the lowest node stays within reach the
+ * answer is bit-identical from anywhere in the basin — no flood fill, no
+ * iteration, still a pure function of the coordinates.
+ *
+ * The relief multiplier is evaluated at the *winning node*, not at the query.
+ * Evaluating it at the query would make the result drift by a percent or so
+ * across a large lake, which is enough to straddle a quantisation boundary and
+ * put a hairline step through the middle of it.
+ */
+function basinFloor(theme: TerrainThemeSpec, wx: number, wy: number, seed: number): number {
+  const cx = Math.round(wx / BASIN_STEP) * BASIN_STEP;
+  const cy = Math.round(wy / BASIN_STEP) * BASIN_STEP;
+  let cache = basinMemo.get(theme);
+  if (!cache) {
+    cache = new Map();
+    basinMemo.set(theme, cache);
+  }
+  const key = `${seed}|${cx}|${cy}`;
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
+
+  // The height is monotonic in the noise for a positive relief, so the lowest
+  // node can be found on the raw noise and converted once, which keeps this to
+  // one noise evaluation per node instead of four.
+  let bestN = Infinity;
+  let bestX = cx;
+  let bestY = cy;
+  for (let dy = -BASIN_REACH; dy <= BASIN_REACH; dy += BASIN_STEP) {
+    for (let dx = -BASIN_REACH; dx <= BASIN_REACH; dx += BASIN_STEP) {
+      const nx = cx + dx;
+      const ny = cy + dy;
+      const n = noise2(nx * LAND_FREQ, ny * LAND_FREQ, seed);
+      if (n < bestN) {
+        bestN = n;
+        bestX = nx;
+        bestY = ny;
+      }
+    }
+  }
+
+  const floor = broadHeight(theme, bestX, bestY, seed);
+  if (cache.size > 200000) cache.clear();
+  cache.set(key, floor);
+  return floor;
+}
+
 /**
  * Height of the water surface over a spot, whether or not there is water there.
  *
  * This is the answer to "lakes should be level, and a height difference should
- * flow". Water used to be a colour painted on the riverbed, so its surface
- * followed every contour the bed did — a river visibly ran along the side of a
- * hill. Here the surface is its own field, and it is *quantised*: the broad
- * shape of the land, floored to `pool`-tile steps.
+ * flow", and it took two goes. The first version quantised the broad land
+ * height *at the point itself*, which is level only in the sense that a
+ * staircase is: measured on a real window, the widest lake in it came out as
+ * concentric rings, 6-5-4-4-5-6 from the middle outward. Of course it did —
+ * the surface was a scaled copy of the bed it sat on, so it reproduced the
+ * bowl's contour lines. Neighbour-agreement statistics missed this completely,
+ * because a terrace is nearly all tread and very little riser.
  *
- * Quantising a smooth field is what buys flatness for free. Every tile whose
- * broad height falls inside one step shares one surface height exactly, so a
- * body of water is level by construction rather than by relaxation — no flood
- * fill, no iteration, and still a pure function of the coordinates, which is
- * what lets the window regenerate identically when you walk back.
+ * A water level is a property of a *basin*, not of a point. So the level is
+ * quantised from the lowest broad height within reach, which behaves as the
+ * two cases demand without needing to tell them apart:
  *
- * Between two steps the surface drops by exactly `pool`, which is a waterfall.
- * So the two behaviours the request asked for are the same mechanism seen at
- * different places on the same field.
+ *  - **In a bowl**, every point sees the same floor, so the level is one value
+ *    over the whole thing and the lake is flat however large it is.
+ *  - **On a slope**, the floor in view drops as you descend, so the level
+ *    steps down with it and a river stays a cascade of pools and falls.
+ *
+ * The quantisation is what keeps the second case: without it a river's surface
+ * would slope continuously again, which is the bug this all started from.
  */
 export function waterTable(theme: TerrainThemeSpec, wx: number, wy: number, seed: number): number {
-  landNoise(wx, wy, seed, landScratch);
-  const broad = (norm01(landScratch.broad) - 0.5) * theme.amplitude * reliefAt(wx, wy, seed);
-  return Math.floor(broad / theme.pool) * theme.pool + theme.waterOffset;
+  // Rounded *up*, which matters more than it looks. Rounding down can land the
+  // level below the basin floor it was measured from, so whether a basin held
+  // any water at all came down to where its floor happened to fall modulo the
+  // step — one theme came out with no water at all near the origin for exactly
+  // that reason. Rounding up guarantees at least `waterFill` of depth over the
+  // floor while still snapping to the lattice, so neighbouring basins within a
+  // step of each other continue to share one surface.
+  const floor = basinFloor(theme, wx, wy, seed);
+  return Math.ceil((floor + theme.waterFill) / theme.pool) * theme.pool;
 }
 
 /** 0 outside a road, rising to 1 along its centre line. */
@@ -530,8 +620,8 @@ const WILDS: TerrainThemeSpec = {
   wall: { color: '#a89a80', pattern: 'brick', roughness: 0.7 },
   yard: { color: '#8e8570', pattern: 'tile', roughness: 0.5 },
 
-  pool: 1.0,
-  waterOffset: -2.2,
+  pool: 1.8,
+  waterFill: 0.6,
   riverDepth: 2.6,
   waterDepth: 2.2,
 
@@ -619,8 +709,8 @@ const BADLANDS: TerrainThemeSpec = {
   wall: { color: '#b08a62', pattern: 'brick', roughness: 0.75 },
   yard: { color: '#9c8a68', pattern: 'tile', roughness: 0.5 },
 
-  pool: 1.35,
-  waterOffset: -2.8,
+  pool: 2.6,
+  waterFill: -0.2,
   riverDepth: 2.8,
   waterDepth: 2.0,
 
