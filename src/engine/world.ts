@@ -1091,6 +1091,39 @@ export class World {
           continue;
         }
 
+        // Parked vehicles belong *on* the carriageway, tight against the
+        // kerb — not up on the pavement, which is where placing them by the
+        // nearest footway tile put them. They take the outermost strip of the
+        // road, below the kerb, leaving the running lanes clear.
+        if (info.road) {
+          if (info.junction) continue;
+          const alongX = info.dy <= info.halfY;
+          const across = alongX ? info.dy : info.dx;
+          const half = alongX ? info.halfY : info.halfX;
+          const along = alongX ? wx : wy;
+          if (across <= half - 1) continue;
+
+          const park = hashi(Math.floor(along / 6), alongX ? info.iy : info.ix, this.seed ^ 0x9a12);
+          if (((along % 6) + 6) % 6 !== park % 3 || park % 100 >= 62) continue;
+
+          const kinds = ['car', 'car', 'taxi', 'van', 'truck'];
+          this.pushProp(
+            kinds[(park >>> 7) % kinds.length],
+            wx + 0.5,
+            wy + 0.5,
+            t.height,
+            CAR_TINTS[(park >>> 11) % CAR_TINTS.length],
+          );
+          const parked = this.entities[this.entities.length - 1];
+          if (parked) {
+            parked.scale = 0.82;
+            // Parked parallel to the street it is standing on.
+            parked.dirX = alongX ? 1 : 0;
+            parked.dirY = alongX ? 0 : 1;
+          }
+          continue;
+        }
+
         if (!info.walk) continue;
 
         // Street trees, at intervals along the kerb rather than scattered:
@@ -1118,26 +1151,6 @@ export class World {
           else if (r < 94) this.pushProp('hydrant', wx + 0.5, wy + 0.5, t.height, null);
           else this.pushProp('bollard', wx + 0.5, wy + 0.5, t.height, null);
           continue;
-        }
-
-        // Parked cars against the kerb. An empty kerb is one of the strongest
-        // tells that a street is scenery rather than somewhere people are, and
-        // a parked car costs no simulation at all.
-        if (across <= kerb + 0.5) {
-          const alongAxis = info.dx < info.dy;
-          const park = hashi(Math.floor(along / 6), alongAxis ? info.ix : info.iy, this.seed ^ 0x9a12);
-          if (((along % 6) + 6) % 6 === park % 3 && park % 100 < 62) {
-            const kinds = ['car', 'car', 'taxi', 'van', 'truck'];
-            this.pushProp(kinds[(park >>> 7) % kinds.length], wx + 0.5, wy + 0.5, t.height, CAR_TINTS[(park >>> 11) % CAR_TINTS.length]);
-            const parked = this.entities[this.entities.length - 1];
-            // Parked along the kerb, so it is drawn from its side.
-            if (parked) {
-              parked.scale = 0.82;
-              parked.dirX = alongAxis ? 0 : 1;
-              parked.dirY = alongAxis ? 1 : 0;
-            }
-            continue;
-          }
         }
 
         // Signals, on the corner of a junction facing each approach.

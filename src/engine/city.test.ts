@@ -267,9 +267,12 @@ test('the city plants trees on its pavements and in its parks', () => {
   assert.ok((byKind.get('stoplight') ?? 0) > 0, 'no signals at any junction');
   assert.ok((byKind.get('lamppost') ?? 0) > 0, 'no lamp posts');
 
-  // Nothing should be standing in the carriageway.
+  // No street *furniture* in the carriageway. Parked vehicles are the one
+  // kind of prop that belongs there, tight against the kerb.
+  const VEHICLES = ['car', 'taxi', 'van', 'truck', 'bus'];
   const info = makeStreetInfo();
   for (const p of props) {
+    if (VEHICLES.includes(p.def.id)) continue;
     streetAt(Math.floor(p.x), Math.floor(p.y), SEED, info);
     assert.equal(info.road, false, `a ${p.def.id} is standing in the road at (${p.x}, ${p.y})`);
   }
@@ -408,9 +411,26 @@ test('the roads are marked and the kerbs are parked up', () => {
     (e) => e.kind === ACTOR_PROP && ['car', 'taxi', 'van', 'truck', 'bus'].includes(e.def.id),
   );
   assert.ok(parked.length > 10, `only ${parked.length} vehicles parked at the kerb`);
-  // Parked, not abandoned in a traffic lane: each should have a heading so it
-  // is drawn from its side rather than swinging to face the viewer.
+  // Each should have a heading so it is drawn from its side rather than
+  // swinging to face the viewer.
   assert.ok(parked.every((e) => e.dirX !== 0 || e.dirY !== 0), 'a parked car has no heading');
+
+  for (const e of parked) {
+    const x = Math.floor(e.x);
+    const y = Math.floor(e.y);
+    streetAt(x, y, SEED, info);
+    // On the road, against the kerb: not up on the pavement, not stranded in
+    // a junction, and not left in a lane the traffic is trying to use.
+    assert.ok(info.road, `a vehicle is parked on the pavement at (${x}, ${y})`);
+    assert.equal(info.junction, false, `a vehicle is parked in a junction at (${x}, ${y})`);
+    const alongX = info.dy <= info.halfY;
+    const across = alongX ? info.dy : info.dx;
+    const half = alongX ? info.halfY : info.halfX;
+    assert.ok(across > half - 1, `a vehicle is parked in a running lane at (${x}, ${y})`);
+    // And standing on the road surface, which is below the kerb beside it.
+    const t = world.tileAt(x, y);
+    assert.ok(t && Math.abs(t.height - e.z) < 1e-9, 'a parked vehicle floats off its tile');
+  }
 });
 
 test('the pavements carry more than planting', () => {
