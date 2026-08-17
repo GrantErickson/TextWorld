@@ -188,14 +188,21 @@ Per column, each tile can contribute:
       became a room with a floor at pavement level and a slab overhead, the
       frontage got openings every `DOOR_EVERY` tiles, and collision started
       answering per storey. You can walk in off the street. 39 of 45 buildings
-      in a window are openable and 96% of interior floor is reachable; what is
-      left is lots with no street frontage at all, which is invisible from
-      outside.
-   4. **Next.** **Stack storeys, then stairs** — slabs every STOREY, a
-      stairwell column with no slabs and a stepped floor to climb. The slabs
-      are already generated (`spansOf` stacks one per storey) and the floors
-      above the first are already hollow; what is missing is any way up, and
-      any light or material up there.
+      in a window are openable; what is left is lots with no street frontage at
+      all, which is invisible from outside.
+   4. **Done.** **Rooms, doorways and furniture** — the footprint is divided on
+      the lot's own lattice, a partition every `ROOM_PITCH` cells, each stretch
+      of wall pierced once at a hashed position. 96% of interior floor is still
+      reachable from the street. Seven pieces of furniture, sparse, big things
+      against a wall.
+   5. **Next.** **Stairs** — the slabs are already generated (`spansOf` stacks
+      one per storey) and the floors above the first are already hollow; what
+      is missing is any way up, and any light, furniture or floor material up
+      there. The shape that works is a switchback: two rows of a shaft, each
+      carrying alternate flights, so consecutive treads over one tile differ by
+      two storeys and there is headroom. One row rising +x on the even flights
+      and the other rising -x on the odd ones lands each flight's top a single
+      step from the next one's bottom.
 
    Collision follows the same span list: which storey you are on is whichever
    span your feet are standing on, and `canStep` compares against the surface
@@ -229,6 +236,18 @@ largest and riskiest piece starts.
   failures — no lamp at all, and a lamp over a surface too light — measure as a
   wash. `spans.test.ts` pins it by rendering a room and refusing a frame whose
   commonest glyph holds over 60% of it.
+- **Anything laid out inside a building goes on the *lot's* lattice, never on
+  a lattice over the world.** Lamps were placed on a world lattice while a
+  footprint was one big room, and partitioning broke it silently: one point per
+  thirty-six tiles against a room of sixteen left better than half the rooms
+  dark, and which ones depended on where the lot happened to fall. `isRoomLamp`
+  answers from the lot's own cell coordinates, so there is exactly one per room
+  however the lots land.
+- **Furniture has to be far sparser than a plan suggests.** Half the wall tiles
+  occupied looks right drawn from above and is unusable in the view: a shelf a
+  tile and a half wide at less than a tile's range fills two thirds of the
+  screen. About a fifth of tiles, big things against a wall, small things in
+  the middle.
 
 The interior lamp is the one place in this engine where the average lies. Tuned
 on frame percentiles the lamp wants to be half again brighter than it is, and a
@@ -624,7 +643,7 @@ Data flow per frame:
 
 ## Tests
 
-`npm test` runs 89 tests via `node --test` — no framework, no browser, because
+`npm test` runs 92 tests via `node --test` — no framework, no browser, because
 the engine is DOM-free. `npm run build` runs them between the typecheck and the
 bundle.
 
