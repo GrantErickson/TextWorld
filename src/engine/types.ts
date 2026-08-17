@@ -230,6 +230,12 @@ export interface Entity {
   dirY: number;
   /** Speed this actor would travel at with nothing in its way. */
   cruise: number;
+  /**
+   * Seconds left on whatever this actor is currently doing: a bus waiting at
+   * a stop, or a pedestrian part-way across a road. Actors are otherwise
+   * stateless, and both of those need to outlast a single frame.
+   */
+  timer: number;
   x: number;
   y: number;
   /** Ground elevation the sprite stands on. 0 for indoor maps. */

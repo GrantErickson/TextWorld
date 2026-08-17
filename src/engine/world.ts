@@ -266,6 +266,8 @@ export class World {
   private readonly streetInfo: StreetInfo = makeStreetInfo();
   /** Scratch list used when carrying actors across a window move. */
   private readonly carried: Entity[] = [];
+  /** Where the shelters are, so buses can pull in without hunting for them. */
+  private readonly busStops: Array<[number, number]> = [];
   private readonly sample: TerrainSample = makeSample();
 
   private constructor(width: number, height: number, tiles: Tile[]) {
@@ -801,6 +803,7 @@ export class World {
         dirX: 0,
         dirY: 0,
         cruise: 0,
+        timer: 0,
         x: e.x,
         y: e.y,
         z: 0,
@@ -1036,6 +1039,7 @@ export class World {
       dirX: 0,
       dirY: 0,
       cruise: 0,
+      timer: 0,
       x,
       y,
       z,
@@ -1059,6 +1063,7 @@ export class World {
     const spec = this.citySpec;
     if (!spec) return;
     const info = this.streetInfo;
+    this.busStops.length = 0;
     const x0 = Math.floor(px - TERRAIN_PROP_CULL);
     const x1 = Math.floor(px + TERRAIN_PROP_CULL);
     const y0 = Math.floor(py - TERRAIN_PROP_CULL);
@@ -1093,10 +1098,23 @@ export class World {
         const across = info.dx < info.dy ? info.dx : info.dy;
         const kerb = info.dx < info.dy ? info.halfX : info.halfY;
         const outer = across > kerb + 0.5;
+        // A shelter every so often on the main roads, and the buses know.
+        if (outer && ((along % 23) + 23) % 23 === 0) {
+          this.pushProp('busstop', wx + 0.5, wy + 0.5, t.height, null);
+          this.busStops.push([wx + 0.5, wy + 0.5]);
+          continue;
+        }
+
         if (outer && ((along % 7) + 7) % 7 === 0) {
           const h = hashi(wx, wy, this.seed ^ 0x3c0d);
-          if (h % 10 < 7) this.pushProp('tree', wx + 0.5, wy + 0.5, t.height, STREET_TREE);
-          else this.pushProp('lamppost', wx + 0.5, wy + 0.5, t.height, null);
+          const r = h % 100;
+          // Street furniture, not just trees: a pavement with nothing on it
+          // but planting reads as landscaping rather than as a street.
+          if (r < 52) this.pushProp('tree', wx + 0.5, wy + 0.5, t.height, STREET_TREE);
+          else if (r < 76) this.pushProp('lamppost', wx + 0.5, wy + 0.5, t.height, null);
+          else if (r < 86) this.pushProp('bin', wx + 0.5, wy + 0.5, t.height, null);
+          else if (r < 94) this.pushProp('hydrant', wx + 0.5, wy + 0.5, t.height, null);
+          else this.pushProp('bollard', wx + 0.5, wy + 0.5, t.height, null);
           continue;
         }
 
@@ -1243,6 +1261,7 @@ export class World {
       dirX: alongX ? dir : 0,
       dirY: alongX ? 0 : dir,
       cruise: (heavy ? 4.2 : 5.5) + (((h >>> 12) % 100) / 100) * (heavy ? 1.6 : 3),
+      timer: 0,
       x,
       y,
       z: t.height,
@@ -1283,6 +1302,7 @@ export class World {
       dirX: alongX ? dir : 0,
       dirY: alongX ? 0 : dir,
       cruise: 1.1 + (((h >>> 15) % 100) / 100) * 0.7,
+      timer: 0,
       x: x + 0.5,
       y: y + 0.5,
       z: t.height,
@@ -1356,6 +1376,27 @@ export class World {
           want = Math.min(want, Math.max(0, (ahead - 3.2) * 1.4));
         }
 
+        // A bus pulls in at a shelter, waits, and will not immediately stop
+        // again at the same one.
+        if (e.def.id === 'bus') {
+          if (e.timer > 0) {
+            e.timer -= dt;
+            want = 0;
+          } else if (e.timer > -6) {
+            e.timer -= dt;
+          } else {
+            for (const stop of this.busStops) {
+              const sdx = stop[0] - e.x;
+              const sdy = stop[1] - e.y;
+              // Generous: the shelter is on the far side of the pavement and
+              // the bus is in a lane, so they are never within a tile or two.
+              if (sdx * sdx + sdy * sdy > 30) continue;
+              e.timer = 3.5;
+              break;
+            }
+          }
+        }
+
         const accel = want > e.speed ? 4.5 : 14;
         e.speed += Math.max(-accel * dt, Math.min(accel * dt, want - e.speed));
         if (e.speed < 0) e.speed = 0;
@@ -1367,12 +1408,39 @@ export class World {
         continue;
       }
 
-      // People: walk on, turn round at the end of the pavement.
+      // People: walk on, cross at the crossings, turn round at the end of the
+      // pavement.
+      if (e.timer > 0) e.timer -= dt;
+
+      // At a crossing, step off the kerb only while the traffic that would
+      // run them down is stopped — the same signal the drivers are reading.
+      if (e.timer <= 0 && !this.isRoadAt(Math.floor(e.x), Math.floor(e.y))) {
+        const ix = nearestLineIndex(e.x, 0, this.seed);
+        const iy = nearestLineIndex(e.y, 1, this.seed);
+        const cx = streetLine(ix, 0, this.seed);
+        const cy = streetLine(iy, 1, this.seed);
+        const nearX = Math.abs(e.x - cx) < 7;
+        const nearY = Math.abs(e.y - cy) < 7;
+        if (nearX !== nearY && hashi(Math.floor(e.x), Math.floor(e.y), this.seed) % 100 < 3) {
+          // Cross the carriageway that runs across our path.
+          const crossX = nearX;
+          const sig = signalFor(ix, iy, !crossX, this.time, this.seed);
+          if (sig !== SIGNAL_GREEN) {
+            e.dirX = crossX ? Math.sign(cx - e.x) || 1 : 0;
+            e.dirY = crossX ? 0 : Math.sign(cy - e.y) || 1;
+            e.timer = 6;
+          }
+        }
+      }
+
       const nx = e.x + e.dirX * e.cruise * dt;
       const ny = e.y + e.dirY * e.cruise * dt;
       const ahead = this.tileAt(Math.floor(nx + e.dirX * 0.6), Math.floor(ny + e.dirY * 0.6));
       const walkable = ahead && ahead.type === TILE_EMPTY && ahead.storeys === 0;
-      if (walkable && this.isPavement(Math.floor(nx + e.dirX * 0.6), Math.floor(ny + e.dirY * 0.6))) {
+      const onFoot =
+        this.isPavement(Math.floor(nx + e.dirX * 0.6), Math.floor(ny + e.dirY * 0.6)) ||
+        (e.timer > 0 && this.isRoadAt(Math.floor(nx + e.dirX * 0.6), Math.floor(ny + e.dirY * 0.6)));
+      if (walkable && onFoot) {
         e.x = nx;
         e.y = ny;
         const t = this.tileAt(Math.floor(e.x), Math.floor(e.y));
@@ -1418,6 +1486,13 @@ export class World {
       }
     }
     return null;
+  }
+
+  /** True on the carriageway itself. */
+  private isRoadAt(wx: number, wy: number): boolean {
+    if (!this.citySpec) return false;
+    streetAt(wx, wy, this.seed, this.streetInfo);
+    return this.streetInfo.road;
   }
 
   /** True on a kerb-height tile beside a carriageway. */
@@ -1555,6 +1630,7 @@ export class World {
           dirX: 0,
           dirY: 0,
           cruise: 0,
+          timer: 0,
           x: wx + 0.5 + jx,
           y: wy + 0.5 + jy,
           z: t.height,
@@ -2268,6 +2344,7 @@ export class World {
           dirX: 0,
           dirY: 0,
           cruise: 0,
+          timer: 0,
           x: wx + 0.5 + jx,
           y: wy + 0.5 + jy,
           z: 0,

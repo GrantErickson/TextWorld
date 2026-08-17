@@ -20,7 +20,7 @@ import {
 } from './city.ts';
 import { World } from './world.ts';
 import { clockString, makeSkyState, skyAt } from './daynight.ts';
-import { ACTOR_CAR, ACTOR_PROP, TILE_EMPTY } from './types.ts';
+import { ACTOR_CAR, ACTOR_PERSON, ACTOR_PROP, TILE_EMPTY } from './types.ts';
 import { Camera } from './camera.ts';
 
 const SEED = 7;
@@ -411,6 +411,48 @@ test('the roads are marked and the kerbs are parked up', () => {
   // Parked, not abandoned in a traffic lane: each should have a heading so it
   // is drawn from its side rather than swinging to face the viewer.
   assert.ok(parked.every((e) => e.dirX !== 0 || e.dirY !== 0), 'a parked car has no heading');
+});
+
+test('the pavements carry more than planting', () => {
+  const world = World.fromCity(spec, SEED);
+  const kinds = new Set(world.entities.filter((e) => e.kind === ACTOR_PROP).map((e) => e.def.id));
+  for (const want of ['tree', 'lamppost', 'busstop', 'bin', 'stoplight']) {
+    assert.ok(kinds.has(want), `the city put out no ${want}`);
+  }
+});
+
+test('buses pull in at the shelters', () => {
+  // The pull-in radius has to allow for the geometry: the shelter is on the
+  // far side of the pavement and the bus is in a lane, so they are never
+  // within a tile of each other. Too tight a radius and no bus ever stops.
+  const world = World.fromCity(spec, SEED);
+  world.timeOfDay = 8 / 24;
+  world.advanceClock(0);
+  let waited = 0;
+  for (let i = 0; i < 2400; i++) {
+    world.update(1 / 60, world.spawnX, world.spawnY);
+    for (const e of world.entities) {
+      if (e.kind === ACTOR_CAR && e.def.id === 'bus' && e.timer > 0 && e.speed < 0.1) waited++;
+    }
+  }
+  assert.ok(waited > 0, 'no bus ever stopped at a shelter');
+});
+
+test('people cross the road, and never end up inside anything', () => {
+  const world = World.fromCity(spec, SEED);
+  world.timeOfDay = 8 / 24;
+  world.advanceClock(0);
+  let crossing = 0;
+  for (let i = 0; i < 1800; i++) {
+    world.update(1 / 60, world.spawnX, world.spawnY);
+    for (const e of world.entities) {
+      if (e.kind !== ACTOR_PERSON) continue;
+      if (e.timer > 0) crossing++;
+      const t = world.tileAt(Math.floor(e.x), Math.floor(e.y));
+      assert.ok(t && t.type === TILE_EMPTY && t.storeys === 0, 'a pedestrian walked into a building');
+    }
+  }
+  assert.ok(crossing > 0, 'nobody ever crossed a road');
 });
 
 test('street lamps are dark by day and lit by night', () => {
