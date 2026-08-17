@@ -56,6 +56,15 @@ export class Renderer {
    * be tested cell by cell.
    */
   private depth = new Float32Array(0);
+  /**
+   * Per-column coverage: which rows of the column being marched are already
+   * resolved. This replaces the single y-buffer, which could only ever
+   * describe one contiguous run of unresolved rows. That is enough while every
+   * column has one surface, and not enough the moment a building has a floor
+   * you can stand under: a slab seen edge-on leaves a gap above it *and*
+   * below it, and ceilings paint down toward the horizon while floors paint up.
+   */
+  private doneRows = new Uint8Array(0);
   private cellDepth = false;
 
   /** World-space end point of each column's ray; drawn on the minimap. */
@@ -84,6 +93,7 @@ export class Renderer {
       this.rayX = new Float32Array(cols);
       this.rayY = new Float32Array(cols);
       this.depth = new Float32Array(cols * rows);
+      this.doneRows = new Uint8Array(rows);
       this.hits = new Array(cols);
       for (let i = 0; i < cols; i++) this.hits[i] = makeHit();
     }
@@ -409,7 +419,7 @@ export class Renderer {
    * ground steps up from the cell before it, and its top surface spanning the
    * distances the ray spends inside it.
    *
-   * `yBuf` is the lowest row not yet painted. It only ever moves up the
+   * The coverage mask records which rows of a column are resolved. It only
    * screen, so occlusion needs no depth compare: standing on a plateau, the
    * valley immediately below the edge is hidden simply because those rows were
    * already covered, and it reappears further out exactly where the line of
@@ -470,12 +480,15 @@ export class Renderer {
       let prevH = here ? here.height : 0;
       let dNear = 0;
       let side = 0;
-      let yBuf = rows;
+      // Rows still to resolve in this column.
+      const done = this.doneRows;
+      done.fill(0);
+      let remaining = rows;
 
       this.rayX[x] = cam.x + rdx * TERRAIN_MAX_DIST;
       this.rayY[x] = cam.y + rdy * TERRAIN_MAX_DIST;
 
-      for (let guard = 0; guard < 600 && yBuf > 0; guard++) {
+      for (let guard = 0; guard < 600 && remaining > 0; guard++) {
         const alongX = sideDistX < sideDistY;
         let dFar = alongX ? sideDistX : sideDistY;
         if (dFar > TERRAIN_MAX_DIST) dFar = TERRAIN_MAX_DIST;
@@ -489,7 +502,7 @@ export class Renderer {
           const rowTop = horizon + (projY * (camZ - h)) / dNear;
           const rowBot = horizon + (projY * (camZ - prevH)) / dNear;
           const y0 = Math.max(0, Math.ceil(rowTop - 0.5));
-          const y1 = Math.min(yBuf - 1, Math.floor(rowBot - 0.5));
+          const y1 = Math.min(rows - 1, Math.floor(rowBot - 0.5));
           if (y1 >= y0) {
             const wx = cam.x + rdx * dNear;
             const wy = cam.y + rdy * dNear;
@@ -502,6 +515,9 @@ export class Renderer {
             const sun = sunLight(world, nx, ny, 0);
 
             for (let y = y0; y <= y1; y++) {
+              if (done[y]) continue;
+              done[y] = 1;
+              remaining--;
               const zAt = camZ - ((y + 0.5 - horizon) * dNear) / projY;
               // The ground floor is its own material: a facade in one skin from
               // pavement to roof reads as an extruded block, not a building.
@@ -531,17 +547,16 @@ export class Renderer {
               );
               depth[y * cols + x] = dNear;
             }
-            yBuf = y0;
           }
         }
 
         // ---- the top surface, only ever visible from above it
-        if (h < camZ - 0.002 && yBuf > 0) {
+        if (h < camZ - 0.002 && remaining > 0) {
           const rise = projY * (camZ - h);
           const rowFar = horizon + rise / Math.max(dFar, 1e-4);
           const rowNear = dNear > 0.02 ? horizon + rise / dNear : rows * 8;
           const y0 = Math.max(0, Math.ceil(rowFar - 0.5));
-          const y1 = Math.min(yBuf - 1, Math.floor(rowNear - 0.5));
+          const y1 = Math.min(rows - 1, Math.floor(rowNear - 0.5));
           if (y1 >= y0) {
             const mat = tile.floor;
             const sun = sunLight(world, tile.nx, tile.ny, tile.nz);
@@ -551,10 +566,12 @@ export class Renderer {
             // it slides across the pool as you walk — the one place in this
             // renderer where something moving is the correct answer.
             const glinty = tile.water && world.sunIntensity > 0;
-            let painted = false;
             for (let y = y0; y <= y1; y++) {
+              if (done[y]) continue;
               const p = y + 0.5 - horizon;
               if (p <= 0.02) continue; // above the horizon: not this surface
+              done[y] = 1;
+              remaining--;
               // Invert the projection for this row. Sampling once per span
               // instead looks fine on the flat and smears badly on a slope.
               const d = rise / p;
@@ -602,9 +619,7 @@ export class Renderer {
                 glyphSeed(wx, wy),
               );
               depth[y * cols + x] = d;
-              painted = true;
             }
-            if (painted) yBuf = Math.min(yBuf, Math.max(y0, Math.floor(horizon) + 1));
           }
         }
 
@@ -622,7 +637,8 @@ export class Renderer {
         if (dNear >= TERRAIN_MAX_DIST) break;
       }
 
-      for (let y = 0; y < yBuf; y++) {
+      for (let y = 0; y < rows; y++) {
+        if (done[y]) continue;
         this.writeSky(world, buf, x, y, rdx, rdy, horizon - (y + 0.5), rows);
       }
     }
