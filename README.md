@@ -17,8 +17,9 @@ folder you can drop on any static host.
   characters.
 - **Takes an ASCII map.** `{ "grid": ["###", "#.#", "###"] }` is a complete,
   valid world. Everything else has a sane default.
-- **Generates endless worlds two ways.** Wave Function Collapse for dungeons
-  and stations, noise-based heightmaps for outdoor country.
+- **Generates endless worlds three ways.** Wave Function Collapse for dungeons
+  and stations, noise-based heightmaps for outdoor country, and a street plan
+  for the city — with traffic, crowds and a day that turns to night.
 - **Holds still.** At rest the image is bit-identical frame to frame; walking,
   fewer than 2% of characters change per frame. See below.
 - **Edits live.** The map source sits beside the viewport; change it and the
@@ -29,7 +30,7 @@ folder you can drop on any static host.
 ```
 npm install
 npm run dev        # opens a browser
-npm test           # 38 tests, no browser needed
+npm test           # 72 tests, no browser needed
 npm run build      # typecheck + test + production build to dist/
 ```
 
@@ -45,6 +46,8 @@ npm run build      # typecheck + test + production build to dist/
 | `E` | open/close a door |
 | `R` | respawn |
 | `M` | show the ray fan on the map |
+| `G` | cycle the glyph set (blocks / ascii / material) |
+| `T` | scrub the clock an hour; hold `Shift` to go back |
 | `[` `]` | character cell size |
 
 ## The map format
@@ -97,14 +100,14 @@ walk:
 ```
 
 Themes: `catacombs`, `caverns`, `station` (dungeon-style, built with Wave
-Function Collapse) and `wilds`, `badlands` (outdoor heightmaps). Change the
-seed for a different world in the same style. Anything else the format
+Function Collapse), `wilds`, `badlands` (outdoor heightmaps), and `city`.
+Change the seed for a different world in the same style. Anything else the format
 understands still layers on top, so `"exposure"` or `"fog"` here overrides
 whatever the theme picked.
 
 ## The worlds
 
-Six are built in, selectable from the dropdown.
+Nine are built in, selectable from the dropdown. The city is the default.
 
 **Hand-authored:** *The Vault* (a lit dungeon with doors, a patrolling drone
 and a sealed brazier alcove), *Night Court* (an open cloister under stars) and
@@ -116,6 +119,15 @@ it forever. Adding a world type means drawing a new sample, not writing code.
 
 **Generated outdoors** are heightmaps: hills, cliffs, rivers, roads, trees,
 shrubs, boulders and walled settlements, spread across four biomes each.
+
+**The generated city** is a street plan rather than a landscape, read in
+order — streets, then pavements, then blocks, then lots, then what stands on
+them. Street lines are jittered by their *index*, so a street runs unbroken
+from one edge of the world to the other while the blocks between them vary in
+width. Buildings vary lot by lot into a skyline; traffic keeps a lane, brakes
+for a red and queues; people walk the pavements; trees line the kerbs. One
+value drives the whole day — sun, sky, fog, stars and whether the lamps have
+come on.
 
 ![Outdoor terrain with a road, tree line and river](docs/wilds.png)
 
@@ -169,8 +181,16 @@ tuning a map's lighting are in [CLAUDE.md](CLAUDE.md).
 
 ## Known limits
 
-- Generated outdoor buildings are roofless walled compounds. A heightmap has
-  one surface per tile, so a tile cannot be both floor and roof.
+- **City buildings cannot yet be entered.** A tile carries one surface, so it
+  cannot be both a floor and the ceiling below it, and the terrain renderer
+  never draws an underside. The design for lifting that — columns as a list of
+  solid spans, and the renderer's y-buffer generalised to a per-column
+  coverage mask — is written up in CLAUDE.md, and the per-tile data it needs
+  is already generated.
+- Generated outdoor buildings are roofless walled compounds, for the same
+  reason.
+- Trees are camera-facing billboards. Vehicles and people are drawn from their
+  long side or their end, but foliage would need several rotations of art.
 - Generated worlds have no doors yet; door state would have to survive the
   tile rebuild that happens on every window shift.
 - The sun does not cast shadows outdoors — surfaces are shaded by slope only.

@@ -99,7 +99,7 @@ Variants need not match their level's coverage exactly: `write` solves the
 colour against the coverage of the glyph it actually chose, so a light variant
 simply comes out with a brighter foreground.
 
-## The city (in progress)
+## The city
 
 A third generator kind, and the first world that is not expressible as one
 surface per tile. The goal is that it feels like a real city: a street grid you
@@ -165,9 +165,32 @@ Per column, each tile can contribute:
    a lattice point every few seconds of walking. The snapshot has to be taken
    *before* the entity list is cleared, which is a mistake that fails silently
    and which `city.test.ts` now checks by object identity.
-4. **Not started.** Seamless interiors: the span renderer described above,
-   floors, stairs, doors and windows. `Tile.storeys` and `Tile.interior` are
-   already generated and carried through, so the data this needs exists.
+4. **Not started — the one piece left.** Seamless interiors. Everything else
+   in the city is done. `Tile.storeys` and `Tile.interior` are generated and
+   carried through already, so the data exists; what does not exist is any
+   ability in the renderer to draw an underside.
+
+   The order to do it in, each step leaving the tree working:
+
+   1. **`spansAt(wx, wy)` on World** — returns the solid intervals of a
+      column. For everything that is not a hollow building this is the single
+      span it is today, so the whole engine keeps its current behaviour and
+      the step is verifiable by a test asserting exactly that.
+   2. **Coverage mask in `drawTerrain`** — replace `yBuf` with a per-column
+      done mask plus a count of unresolved rows, and start drawing the
+      *underside* of spans above the eye. With one span per column this is
+      provably the same picture, which is the point: it can be landed and
+      checked before any building is hollowed out.
+   3. **Hollow the ground floor** — perimeter tiles stay solid, interior tiles
+      get a floor at pavement level and a ceiling slab a storey up, with one
+      gap in the perimeter for a door. First moment anything is visibly
+      different, and it exercises ceilings and interior lighting.
+   4. **Stack storeys, then stairs** — slabs every STOREY, a stairwell column
+      with no slabs and a stepped floor to climb.
+
+   Collision follows the same span list: which storey you are on is whichever
+   span your feet are standing on, and `canStep` compares against the surface
+   of the span you would be on, not the column's single height.
 
 Steps 1-2 fit the existing renderer, so the city is walkable and lit before the
 largest and riskiest piece starts.
