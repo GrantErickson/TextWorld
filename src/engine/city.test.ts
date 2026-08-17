@@ -380,17 +380,25 @@ test('districts differ in more than the size of the same thing', () => {
   const s = makeCitySample();
   const info = makeStreetInfo();
   const tallest = [0, 0, 0];
+  const shortest = [99, 99, 99];
   const openLots = [0, 0, 0];
   for (let y = -260; y < 260; y += 2) {
     for (let x = -260; x < 260; x += 2) {
       const d = districtAt(x, y, SEED);
       sampleCity(spec, x, y, SEED, s, info);
-      if (s.storeys > 0) tallest[d] = Math.max(tallest[d], s.storeys);
+      if (s.storeys > 0) {
+        tallest[d] = Math.max(tallest[d], s.storeys);
+        shortest[d] = Math.min(shortest[d], s.storeys);
+      }
       else if (!info.road && !info.walk) openLots[d]++;
     }
   }
   assert.ok(tallest[0] > tallest[1] * 2, `downtown tops out at ${tallest[0]}, suburbs at ${tallest[1]}`);
   assert.ok(tallest[1] > tallest[2], 'residential should build higher than industrial');
+  // And nowhere should be uniformly single-storey: the height curve used to do
+  // nearly all its work at the bottom of the range, so a whole district came
+  // out one floor high and there was no skyline to speak of.
+  assert.ok(shortest[0] >= 2 && shortest[1] >= 2 && shortest[2] >= 2, 'a district builds only single storeys');
   assert.ok(openLots[1] > openLots[0] * 2, 'the suburbs should be the greener district');
 });
 

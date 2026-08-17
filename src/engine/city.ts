@@ -428,12 +428,19 @@ export function sampleCity(
   // varies across the few hundred tiles you can actually see: neighbouring
   // lots have to differ from each other, or there is no skyline.
   const roll = ((key >>> 7) % 1000) / 1000;
-  const tallness = 0.3 + 0.7 * dens;
-  // Towers belong downtown. Elsewhere the ceiling is much lower, which is what
-  // makes crossing from one district into another feel like going somewhere.
+  const tallness = 0.45 + 0.55 * dens;
+
+  // Towers belong downtown, and every district has a floor as well as a
+  // ceiling. Without the floor the curve did almost all its work at the bottom
+  // of the range: `pow(roll, 1.7)` averages about 0.37, so on a three-storey
+  // cap nearly every lot rounded down to a single storey and whole
+  // neighbourhoods came out uniformly one floor high. A gentler exponent and a
+  // district minimum give each part of town its own band of heights instead.
+  const floorStoreys =
+    district === DISTRICT_DOWNTOWN ? 4 : district === DISTRICT_RESIDENTIAL ? 2 : 2;
   const cap =
-    district === DISTRICT_DOWNTOWN ? spec.maxStoreys : district === DISTRICT_RESIDENTIAL ? 5 : 3;
-  const storeys = 1 + Math.floor(Math.pow(roll, 1.7) * tallness * cap);
+    district === DISTRICT_DOWNTOWN ? spec.maxStoreys : district === DISTRICT_RESIDENTIAL ? 7 : 5;
+  const storeys = floorStoreys + Math.floor(Math.pow(roll, 1.25) * tallness * (cap - floorStoreys));
 
   // Lots are built to their boundaries, sharing party walls the way a real
   // block does. The variation between neighbours is what reads as separate
@@ -461,7 +468,7 @@ const DOWNTOWN: CityThemeSpec = {
   label: 'Endless City',
   kind: 'city',
   amplitude: 3.5,
-  maxStoreys: 14,
+  maxStoreys: 16,
 
   road: { color: '#4a4a52', pattern: 'noise', roughness: 0.3 },
   walk: { color: '#8e8e94', pattern: 'tile', roughness: 0.4 },
