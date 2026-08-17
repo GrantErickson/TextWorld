@@ -665,7 +665,7 @@ export class Renderer {
       // its end, whichever the viewer is nearer to, so a bus stops swinging
       // its flank round to face you as you walk past it.
       let art = def.art;
-      let spriteW = def.width;
+      let spriteW = def.width * e.scale;
       if (def.endArt && (e.dirX !== 0 || e.dirY !== 0)) {
         const vx = e.x - cam.x;
         const vy = e.y - cam.y;
@@ -673,7 +673,7 @@ export class Renderer {
         const align = Math.abs((e.dirX * vx + e.dirY * vy) / vlen);
         if (align > 0.5) {
           art = def.endArt;
-          spriteW = def.endWidth ?? def.width;
+          spriteW = (def.endWidth ?? def.width) * e.scale;
         }
       }
 
@@ -693,7 +693,7 @@ export class Renderer {
       // e.z is the ground the sprite stands on: 0 indoors, the terrain height
       // outdoors, so a tree on a hilltop is drawn on the hilltop.
       const zBottom = e.z + def.base + bob;
-      const zTop = zBottom + def.height;
+      const zTop = zBottom + def.height * e.scale;
       const rowB = horizon + (projY * (cam.z - zBottom)) / tY;
       const rowT = horizon + (projY * (cam.z - zTop)) / tY;
       if (rowB < 0 || rowT >= rows) continue;

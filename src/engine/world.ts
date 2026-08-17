@@ -804,6 +804,7 @@ export class World {
         dirY: 0,
         cruise: 0,
         timer: 0,
+        scale: 1,
         x: e.x,
         y: e.y,
         z: 0,
@@ -1040,6 +1041,7 @@ export class World {
       dirY: 0,
       cruise: 0,
       timer: 0,
+      scale: 1,
       x,
       y,
       z,
@@ -1130,6 +1132,7 @@ export class World {
             const parked = this.entities[this.entities.length - 1];
             // Parked along the kerb, so it is drawn from its side.
             if (parked) {
+              parked.scale = 0.82;
               parked.dirX = alongAxis ? 0 : 1;
               parked.dirY = alongAxis ? 1 : 0;
             }
@@ -1262,6 +1265,7 @@ export class World {
       dirY: alongX ? 0 : dir,
       cruise: (heavy ? 4.2 : 5.5) + (((h >>> 12) % 100) / 100) * (heavy ? 1.6 : 3),
       timer: 0,
+      scale: 1,
       x,
       y,
       z: t.height,
@@ -1303,6 +1307,7 @@ export class World {
       dirY: alongX ? 0 : dir,
       cruise: 1.1 + (((h >>> 15) % 100) / 100) * 0.7,
       timer: 0,
+      scale: 1,
       x: x + 0.5,
       y: y + 0.5,
       z: t.height,
@@ -1631,6 +1636,7 @@ export class World {
           dirY: 0,
           cruise: 0,
           timer: 0,
+          scale: 1,
           x: wx + 0.5 + jx,
           y: wy + 0.5 + jy,
           z: t.height,
@@ -2345,6 +2351,7 @@ export class World {
           dirY: 0,
           cruise: 0,
           timer: 0,
+          scale: 1,
           x: wx + 0.5 + jx,
           y: wy + 0.5 + jy,
           z: 0,

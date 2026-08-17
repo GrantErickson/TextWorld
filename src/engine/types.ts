@@ -250,6 +250,12 @@ export interface Entity {
   path: Array<[number, number]>;
   pathIndex: number;
   speed: number;
+  /**
+   * Size multiplier on the sprite's world dimensions. Parked cars use the
+   * same art as the traffic, so shrinking the sprite itself would shrink
+   * every car on the road with them.
+   */
+  scale: number;
   /** Vertical bob, purely cosmetic, in tiles. */
   bob: number;
   bobPhase: number;
