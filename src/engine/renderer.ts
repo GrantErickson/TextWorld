@@ -654,6 +654,22 @@ export class Renderer {
       const e = world.entities[item.index];
       const def = e.def;
 
+      // Pick the view. Anything with a heading is drawn from its long side or
+      // its end, whichever the viewer is nearer to, so a bus stops swinging
+      // its flank round to face you as you walk past it.
+      let art = def.art;
+      let spriteW = def.width;
+      if (def.endArt && (e.dirX !== 0 || e.dirY !== 0)) {
+        const vx = e.x - cam.x;
+        const vy = e.y - cam.y;
+        const vlen = Math.hypot(vx, vy) || 1;
+        const align = Math.abs((e.dirX * vx + e.dirY * vy) / vlen);
+        if (align > 0.5) {
+          art = def.endArt;
+          spriteW = def.endWidth ?? def.width;
+        }
+      }
+
       const sx = e.x - cam.x;
       const sy = e.y - cam.y;
       const tX = invDet * (cam.dirY * sx - cam.dirX * sy);
@@ -661,7 +677,7 @@ export class Renderer {
       if (tY <= 0.12 || tY > MAX_DIST) continue;
 
       const screenX = (cols / 2) * (1 + tX / tY);
-      const halfW = (projX * (def.width / 2)) / tY;
+      const halfW = (projX * (spriteW / 2)) / tY;
       const colL = screenX - halfW;
       const colR = screenX + halfW;
       if (colR < 0 || colL >= cols) continue;
@@ -675,8 +691,8 @@ export class Renderer {
       const rowT = horizon + (projY * (cam.z - zTop)) / tY;
       if (rowB < 0 || rowT >= rows) continue;
 
-      const artH = def.art.length;
-      const artW = def.art[0].length;
+      const artH = art.length;
+      const artW = art[0].length;
       const spanX = colR - colL;
       const spanY = rowB - rowT;
       if (spanX <= 0 || spanY <= 0) continue;
@@ -715,7 +731,7 @@ export class Renderer {
       // sprite so the foot stays planted and the crown moves.
       const swayCols =
         e.sway > 0
-          ? (Math.sin(world.time * 1.15 + e.bobPhase) * e.sway * artW) / Math.max(0.01, def.width)
+          ? (Math.sin(world.time * 1.15 + e.bobPhase) * e.sway * artW) / Math.max(0.01, spriteW)
           : 0;
 
       const xStart = Math.max(0, Math.ceil(colL - 0.5));
@@ -749,7 +765,7 @@ export class Renderer {
             if (ax < 0 || ax >= artW) continue;
           }
 
-          const row = def.art[av];
+          const row = art[av];
           const ch = ax < row.length ? row[ax] : ' ';
           const density = DENSITY_CHARS[ch];
           if (density === undefined || density < 0) continue;

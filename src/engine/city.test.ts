@@ -20,6 +20,7 @@ import {
 import { World } from './world.ts';
 import { clockString, makeSkyState, skyAt } from './daynight.ts';
 import { ACTOR_CAR, ACTOR_PROP, TILE_EMPTY } from './types.ts';
+import { Camera } from './camera.ts';
 
 const SEED = 7;
 const spec = CITY_THEMES.city;
@@ -271,6 +272,45 @@ test('the city plants trees on its pavements and in its parks', () => {
     streetAt(Math.floor(p.x), Math.floor(p.y), SEED, info);
     assert.equal(info.road, false, `a ${p.def.id} is standing in the road at (${p.x}, ${p.y})`);
   }
+});
+
+test('you can walk onto a pavement without jumping', () => {
+  // The kerb is well inside the step limit, but the camera reports its feet
+  // from world.eyeHeight while resting at a height derived from something
+  // else makes the body stand below its own ground, and every kerb becomes
+  // just too tall. canStep alone cannot catch that — it has to be walked.
+  const world = World.fromCity(spec, SEED);
+  const info = makeStreetInfo();
+  const push = { forward: 1, strafe: 0, turn: 0, mouseDX: 0, mouseDY: 0, run: false, jump: false, lift: 0 };
+
+  let tried = 0;
+  let failed = 0;
+  for (let y = world.originY + 3; y < world.originY + world.height - 3 && tried < 12; y++) {
+    for (let x = world.originX + 3; x < world.originX + world.width - 3 && tried < 12; x++) {
+      streetAt(x, y, SEED, info);
+      if (!info.road) continue;
+      streetAt(x + 2, y, SEED, info);
+      if (!info.walk) continue;
+      const t = world.tileAt(x, y);
+      if (!t || t.type !== TILE_EMPTY) continue;
+      tried++;
+
+      const cam = new Camera();
+      cam.placeAt(x + 0.5, y + 0.5, 0, t.height, world.eyeHeight);
+      const from = cam.x;
+      for (let i = 0; i < 180; i++) cam.update(1 / 60, push, world, 40);
+      if (cam.x - from < 1.5) failed++;
+
+      // And the eye must rest a full eye-height above the ground, not part of one.
+      assert.ok(
+        Math.abs(cam.z - (world.groundAt(cam.x, cam.y) + world.eyeHeight)) < 0.06,
+        `eye settled at ${cam.z.toFixed(3)}, not ${(world.groundAt(cam.x, cam.y) + world.eyeHeight).toFixed(3)}`,
+      );
+      break;
+    }
+  }
+  assert.ok(tried > 0, 'found no kerb to walk up');
+  assert.equal(failed, 0, `${failed} of ${tried} kerbs could not be walked up`);
 });
 
 test('street lamps are dark by day and lit by night', () => {

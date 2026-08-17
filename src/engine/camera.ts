@@ -189,14 +189,17 @@ export class Camera {
     // you walking on the water. Depth is what decides between the two.
     const groundZ = world.bedAt(this.x, this.y);
     const depth = world.waterDepthAt(this.x, this.y);
-    const restZ = groundZ + EYE_HEIGHT;
+    // world.eyeHeight, not the constant: mixing the two puts the eye at one
+    // height and reports the feet at another, so the body ends up standing
+    // below the ground it is on and every kerb becomes unclimbable.
+    const restZ = groundZ + world.eyeHeight;
     const surfaceZ = groundZ + depth;
 
     // Being *over* deep water is not the same as being *in* it — the eye has
     // to have reached the surface. Without that test you float in mid-air the
     // moment you jump off a cliff above a lake.
     this.swimming = !this.flying && depth > SWIM_DEPTH && this.z <= surfaceZ + SWIM_EYE + 0.05;
-    this.wading = !this.flying && !this.swimming && depth > 0.05 && this.z <= surfaceZ + EYE_HEIGHT;
+    this.wading = !this.flying && !this.swimming && depth > 0.05 && this.z <= surfaceZ + world.eyeHeight;
 
     if (this.flying) {
       this.vz = 0;

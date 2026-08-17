@@ -169,6 +169,16 @@ export interface SpriteDef {
   /** Height of the sprite's bottom edge above the floor, in tiles. */
   base: number;
   /**
+   * Art seen end-on, for anything with a heading. A billboard is right for a
+   * roughly symmetric object like a tree, and wrong for a bus: swinging its
+   * long side to face you wherever you stand is the single most cardboard
+   * thing a sprite can do. Sprites with this are drawn from whichever of the
+   * two views the viewer is actually nearer to.
+   */
+  endArt?: string[];
+  /** World width of the end-on view; the long view keeps `width`. */
+  endWidth?: number;
+  /**
    * Apply an entity's tint only to the self-lit ('@') cells. A traffic signal
    * needs its lamp to change colour without its post changing with it.
    */

@@ -204,6 +204,14 @@ for (const p of PRESETS) {
     // No storage available; start from the default preset.
   }
 
+  // A stored map that is byte-identical to a shipped preset was never edited,
+  // it was just the last one opened — so it should not outrank a change to
+  // which world the site opens with. A map that *was* edited is kept.
+  if (restoredSource && PRESETS.some((p) => p.source === restoredSource)) {
+    restoredSource = null;
+    restoredId = PRESETS[0].id;
+  }
+
   presetSel.value = presetById(restoredId).id;
   if (restoredSource) {
     srcEl.value = restoredSource;
