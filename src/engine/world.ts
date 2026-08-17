@@ -20,6 +20,7 @@ import { lookupTerrainTheme, makeSample, sampleTerrain, terrainThemeIds } from '
 import { hashi } from './noise.ts';
 import { LIGHT_HEIGHT } from './lighting.ts';
 import { EYE_HEIGHT } from './camera.ts';
+import { STOREY } from './city.ts';
 import type { SkyState } from './daynight.ts';
 import { DAY_LENGTH, makeSkyState, skyAt } from './daynight.ts';
 import type { CitySample, CityThemeSpec, StreetInfo } from './city.ts';
@@ -78,6 +79,19 @@ const PROP_CULL = 28;
  * cliff rather than as a large step.
  */
 const STEP_HEIGHT = 0.55;
+/**
+ * A solid vertical interval of a column: `lo` up to `hi`, in tiles.
+ */
+export interface Span {
+  lo: number;
+  hi: number;
+}
+
+/** Everything solid is bottomless; nothing ever looks under the world. */
+const FLOOR_OF_THE_WORLD = -1000;
+/** Thickness of a floor slab between one storey and the next. */
+export const SLAB = 0.3;
+
 /** Outdoors, vegetation is placed further out: it is the view, not decoration. */
 const TERRAIN_PROP_CULL = 46;
 
@@ -323,6 +337,57 @@ export class World {
     return true;
   }
 
+  /**
+   * The solid vertical intervals of a column, nearest the ground first.
+   *
+   * This is the shape everything about interiors hangs off. A street, a
+   * hillside or a solid building wall is one span running from far below up
+   * to its surface — exactly the single height the engine has always used,
+   * which is why introducing this changes nothing until a building is
+   * actually hollowed out. A hollow building is the ground, then a thin slab
+   * at each storey, then the roof, with walkable air between them.
+   *
+   * Returns how many spans were written into `out`.
+   */
+  spansAt(wx: number, wy: number, out: Span[]): number {
+    const t = this.tileAt(wx, wy);
+    if (!t) return 0;
+
+    if (!t.interior || t.storeys <= 0) {
+      out[0] = out[0] ?? { lo: 0, hi: 0 };
+      out[0].lo = FLOOR_OF_THE_WORLD;
+      out[0].hi = t.height;
+      return 1;
+    }
+
+    const base = t.height - t.storeys * STOREY;
+    out[0] = out[0] ?? { lo: 0, hi: 0 };
+    out[0].lo = FLOOR_OF_THE_WORLD;
+    out[0].hi = base;
+    for (let k = 1; k <= t.storeys; k++) {
+      const top = base + k * STOREY;
+      out[k] = out[k] ?? { lo: 0, hi: 0 };
+      out[k].lo = top - SLAB;
+      out[k].hi = top;
+    }
+    return t.storeys + 1;
+  }
+
+  /** The surface a body at `feetZ` stands on, and the ceiling above it. */
+  surfaceUnder(wx: number, wy: number, feetZ: number, out: Span[]): { floor: number; ceiling: number } {
+    const n = this.spansAt(wx, wy, out);
+    let floor = -Infinity;
+    let ceiling = Infinity;
+    for (let i = 0; i < n; i++) {
+      const sp = out[i];
+      if (sp.hi <= feetZ + 0.06) {
+        if (sp.hi > floor) floor = sp.hi;
+      } else if (sp.lo > feetZ && sp.lo < ceiling) {
+        ceiling = sp.lo;
+      }
+    }
+    return { floor, ceiling };
+  }
   /**
    * Elevation of the visible surface under a world position — the top of the
    * water where there is water. Always 0 indoors.
