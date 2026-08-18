@@ -155,8 +155,9 @@ Per column, each tile can contribute:
 3. **Done.** Traffic, crowds and street furniture. Signals are a pure function
    of the junction's coordinates and the clock — no light objects to step, and
    every driver approaching a junction agrees about it without coordinating.
-   Cars keep a lane, brake for a red and queue behind the car in front; people
-   walk the pavements and turn round at the end of one. Trees line the kerbs at
+   Cars keep a lane, brake for a red and queue behind the car in front. People
+   walk the pavements, turn at the corners rather than reversing, cross at the
+   crossings and go in and out of the buildings. Trees line the kerbs at
    intervals and fill the parks, with lamp posts and benches among them.
 
    The one thing worth remembering: **props are rebuilt on every window move,
@@ -296,6 +297,35 @@ both were wrong in the first draft of step 2b:
   other way about. So tops run downward from eye level and undersides upward,
   and since tops land below the horizon and undersides above it, the two runs
   never contend for a row.
+
+### Walking a crowd
+
+A pedestrian is a walker on the grid of walkable tiles, and two rules are the
+whole of it. Both were the second attempt:
+
+- **When blocked, turn; do not reverse.** Every corner of a pavement blocks, so
+  what to do when blocked *is* the behaviour. Anything but the way they came in
+  by follows a pavement round its corners and across a neighbourhood: the
+  median walk covers 88 distinct tiles over forty seconds against 18 for
+  reversing, and ends 33 tiles from where it started rather than 11.
+- **Where they may walk is a step test**, not a list of surface kinds — open
+  ground or the floor of a room, within STEP_HEIGHT of where they stand, asked
+  through the same span list the player's legs use. That is what lets them use
+  doors and stairs without knowing either exists: a threshold and a tread are
+  both a small rise and a wall is not.
+
+The turn that takes them indoors is aimed at **doors specifically**. A uniform
+chance of turning anywhere is the obvious general answer and makes the walk a
+*random* one, which covers less ground than following a pavement — 60 tiles
+against 93. Because the rule is symmetric it is also what brings them out
+again: 18 of 34 visit a building over forty seconds while about a fifth are
+indoors at any moment.
+
+Both failure modes are silent and pull opposite ways, so `city.test.ts`
+measures ground *covered* rather than distance walked — a crowd pacing up and
+down walks just as far — and separately checks who is still outside at the end,
+since a door that works one way drains the street over a few minutes and no
+count of visits indoors would notice.
 
 ### Two things step 2 added that the rest of the engine now depends on
 
