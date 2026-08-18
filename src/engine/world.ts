@@ -70,6 +70,12 @@ const SOLVE_BLOCK = 24;
  */
 const MIN_POCKET = 8;
 
+/** How often a person walking past an open door turns in through it. */
+const DOOR_CHANCE = 40;
+/** The four ways off a tile. */
+const STEP_DX = [1, -1, 0, 0];
+const STEP_DY = [0, 0, 1, -1];
+
 /** Props and lights are only instantiated near the player. */
 const LIGHT_CULL = 40;
 const PROP_CULL = 28;
@@ -316,6 +322,9 @@ export class World {
   private readonly busStops: Array<[number, number]> = [];
   /** Reused by the collision queries, which run several times a frame. */
   private readonly collideSpans: Span[] = [];
+  /** Scratch for the ways out of a tile, when a person is choosing one. */
+  private readonly wayDX = new Int8Array(4);
+  private readonly wayDY = new Int8Array(4);
   /** Feet height of the player, as of the last update; drives which storey
    * of a building gets furnished and lit. */
   private playerZ = 0;
@@ -1792,24 +1801,112 @@ export class World {
         }
       }
 
+      const wasX = Math.floor(e.x);
+      const wasY = Math.floor(e.y);
       const nx = e.x + e.dirX * e.cruise * dt;
       const ny = e.y + e.dirY * e.cruise * dt;
-      const ahead = this.tileAt(Math.floor(nx + e.dirX * 0.6), Math.floor(ny + e.dirY * 0.6));
-      const walkable = ahead && ahead.type === TILE_EMPTY && ahead.storeys === 0;
-      const onFoot =
-        this.isPavement(Math.floor(nx + e.dirX * 0.6), Math.floor(ny + e.dirY * 0.6)) ||
-        (e.timer > 0 && this.isRoadAt(Math.floor(nx + e.dirX * 0.6), Math.floor(ny + e.dirY * 0.6)));
-      if (walkable && onFoot) {
+      const aheadX = Math.floor(nx + e.dirX * 0.6);
+      const aheadY = Math.floor(ny + e.dirY * 0.6);
+
+      if (this.canWalk(e, aheadX, aheadY)) {
         e.x = nx;
         e.y = ny;
-        const t = this.tileAt(Math.floor(e.x), Math.floor(e.y));
-        if (t) e.z = t.height;
+        e.z = this.bedAt(e.x, e.y, e.z);
       } else {
-        e.dirX = -e.dirX;
-        e.dirY = -e.dirY;
+        // Blocked. Turn rather than reverse: reversing is what made a crowd
+        // read as a row of things bouncing between two kerbs, and every corner
+        // of a pavement blocks, so turning there is most of what makes them
+        // look like they are going somewhere.
+        this.steerPerson(e);
+      }
+
+      // Passing a way in, sometimes take it. Deliberately a door and not a
+      // general urge to wander: a uniform chance of turning anywhere makes the
+      // walk a random one, and a random walk covers *less* ground than
+      // following a pavement round its corners — measured at 60 tiles against
+      // 93 over the same forty seconds. Turning at a door costs nothing
+      // anywhere else, and it works in both directions, so the same rule is
+      // what eventually brings them back out.
+      if (Math.floor(e.x) !== wasX || Math.floor(e.y) !== wasY) {
+        const bx = Math.floor(e.x);
+        const by = Math.floor(e.y);
+        const sx = e.dirY === 0 ? 0 : 1;
+        const sy = e.dirY === 0 ? 1 : 0;
+        for (let side = -1; side <= 1; side += 2) {
+          const tx = bx + sx * side;
+          const ty = by + sy * side;
+          const t = this.tileAt(tx, ty);
+          if (!t?.doorway || !this.canWalk(e, tx, ty)) continue;
+          const h = hashi(tx * 31 + Math.floor(e.bobPhase * 100), ty, this.seed ^ 0x9a12);
+          if (h % 100 >= DOOR_CHANCE) continue;
+          e.dirX = sx * side;
+          e.dirY = sy * side;
+          e.x = bx + 0.5;
+          e.y = by + 0.5;
+          break;
+        }
       }
       void info;
     }
+  }
+
+  /**
+   * Somewhere a person may put their foot: open ground or a room, and within
+   * a step of where they are standing.
+   *
+   * The step test is what lets them use the doors and the stairs without
+   * knowing that either exists — a threshold and a tread are both a small rise
+   * and a wall is not — and it is the same rule the player's legs obey, asked
+   * through the same span list.
+   */
+  private canWalk(e: Entity, tx: number, ty: number): boolean {
+    const t = this.tileAt(tx, ty);
+    if (!t || t.type !== TILE_EMPTY) return false;
+    if (t.storeys > 0 && !t.interior) return false;
+    // The carriageway is for crossing, and only while the crossing they began
+    // on the signal is still running.
+    if (e.timer <= 0 && this.isRoadAt(tx, ty)) return false;
+    return Math.abs(this.bedAt(tx + 0.5, ty + 0.5, e.z) - e.z) <= STEP_HEIGHT;
+  }
+
+  /**
+   * Pick a new way for a person to walk.
+   *
+   * Anything but straight back the way they came, which is what stops two
+   * people meeting in a doorway from jittering, and what stops a dead end from
+   * being answered with an immediate about-turn. Only when there is genuinely
+   * nowhere else does it reverse.
+   *
+   * The choice is hashed on the tile *and* the person, so two of them at the
+   * same corner do not turn in step, and so one person's route through a
+   * neighbourhood is their own rather than everyone's.
+   */
+  private steerPerson(e: Entity): void {
+    const bx = Math.floor(e.x);
+    const by = Math.floor(e.y);
+    let n = 0;
+    for (let i = 0; i < 4; i++) {
+      const dx = STEP_DX[i];
+      const dy = STEP_DY[i];
+      if (dx === -e.dirX && dy === -e.dirY) continue;
+      if (!this.canWalk(e, bx + dx, by + dy)) continue;
+      this.wayDX[n] = dx;
+      this.wayDY[n] = dy;
+      n++;
+    }
+    if (n === 0) {
+      e.dirX = -e.dirX;
+      e.dirY = -e.dirY;
+      return;
+    }
+    const h = hashi(bx * 31 + Math.floor(e.bobPhase * 100), by, this.seed ^ 0x2b4d);
+    const k = h % n;
+    e.dirX = this.wayDX[k];
+    e.dirY = this.wayDY[k];
+    // Step back to the middle of the tile before setting off across it, or a
+    // turn taken at the edge clips the corner and puts them in the wall.
+    e.x = bx + 0.5;
+    e.y = by + 0.5;
   }
 
   /** Search outward for a pavement tile, up to `reach` tiles away. */

@@ -22,6 +22,7 @@ import {
 } from './city.ts';
 import { World } from './world.ts';
 import { clockString, makeSkyState, skyAt } from './daynight.ts';
+import type { Entity } from './types.ts';
 import { ACTOR_CAR, ACTOR_PERSON, ACTOR_PROP, TILE_EMPTY } from './types.ts';
 import { Camera } from './camera.ts';
 
@@ -504,21 +505,68 @@ test('buses pull in at the shelters', () => {
   assert.ok(waited > 0, 'no bus ever stopped at a shelter');
 });
 
-test('people cross the road, and never end up inside anything', () => {
+test('people get somewhere, and never end up inside anything solid', () => {
+  // Two failures, and they pull in opposite directions. A crowd that only
+  // reverses when it is blocked reads as a row of things bouncing between two
+  // kerbs — perfectly valid, and the thing this is really here to catch. A
+  // crowd that walks anywhere at all ends up inside walls.
   const world = World.fromCity(spec, SEED);
   world.timeOfDay = 8 / 24;
   world.advanceClock(0);
+
+  const seen = new Map<Entity, Set<string>>();
+  const wentIn = new Set<Entity>();
   let crossing = 0;
-  for (let i = 0; i < 1800; i++) {
-    world.update(1 / 60, world.spawnX, world.spawnY);
+  for (let i = 0; i < 2400; i++) {
+    world.update(1 / 60, world.spawnX, world.spawnY, 0);
     for (const e of world.entities) {
       if (e.kind !== ACTOR_PERSON) continue;
       if (e.timer > 0) crossing++;
+
       const t = world.tileAt(Math.floor(e.x), Math.floor(e.y));
-      assert.ok(t && t.type === TILE_EMPTY && t.storeys === 0, 'a pedestrian walked into a building');
+      assert.ok(t && t.type === TILE_EMPTY, 'a pedestrian walked into a wall');
+      assert.ok(t!.storeys === 0 || t!.interior, 'a pedestrian walked into a building');
+      // And on the floor of wherever they are, not through it or above it.
+      assert.ok(
+        Math.abs(e.z - world.bedAt(e.x, e.y, e.z)) < 0.1,
+        `a pedestrian is ${(e.z - world.bedAt(e.x, e.y, e.z)).toFixed(2)} off the floor`,
+      );
+      if (t!.interior) wentIn.add(e);
+
+      let s = seen.get(e);
+      if (!s) {
+        s = new Set();
+        seen.set(e, s);
+      }
+      s.add(`${Math.floor(e.x)},${Math.floor(e.y)}`);
     }
   }
   assert.ok(crossing > 0, 'nobody ever crossed a road');
+
+  // Counted as *people*, not as frames. A handful get indoors by being turned
+  // in at a door they were blocked against, whatever the rules say, so "at
+  // least one" passes even with nobody choosing to go in: it is the share of
+  // the crowd that separates walking past a shop from going into it.
+  const share = wentIn.size / seen.size;
+  assert.ok(share > 0.25, `only ${wentIn.size} of ${seen.size} people went indoors in forty seconds`);
+
+  // And they come back out. A door that works one way drains the street into
+  // the buildings over a few minutes and leaves the city looking abandoned,
+  // which no count of *visits* indoors would ever notice.
+  let stillIn = 0;
+  for (const e of world.entities) {
+    if (e.kind !== ACTOR_PERSON) continue;
+    if (world.tileAt(Math.floor(e.x), Math.floor(e.y))?.interior) stillIn++;
+  }
+  const outside = seen.size - stillIn;
+  assert.ok(stillIn < seen.size * 0.5, `${stillIn} of ${seen.size} are indoors at the end; the street has drained`);
+  assert.ok(outside > 0, 'nobody is left on the street');
+
+  // Ground covered, not distance walked: someone pacing a ten-tile stretch of
+  // pavement walks as far as someone crossing the neighbourhood.
+  const tiles = [...seen.values()].map((s) => s.size).sort((a, b) => a - b);
+  const median = tiles[tiles.length >> 1];
+  assert.ok(median > 40, `the median walk covers ${median} tiles, which is a pace up and down`);
 });
 
 test('street lamps are dark by day and lit by night', () => {
